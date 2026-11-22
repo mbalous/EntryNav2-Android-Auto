@@ -1,5 +1,6 @@
 #!/bin/sh
 # Copyright (c) 2026 Jiraiya43
+# Copyright (c) 2026 mbalous
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Generate link-only ARM libraries; every function traps if a stub is accidentally loaded.
 set -eu
