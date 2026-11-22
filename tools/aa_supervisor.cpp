@@ -37,6 +37,7 @@
 #include "evo_spp_snapshot.hpp"
 #include "evo_wlan.hpp"
 #include "kept_log.hpp"
+#include "log_copy.hpp"
 #include "service_contract.hpp"
 #include "spp_baseline.hpp"
 #include "usb_accessory.hpp"
@@ -589,14 +590,19 @@ int main(int argc, char** argv) {
     if (argc == 2 && !strcmp(argv[1], "--compat")) {
         return compatReport();
     }
+    if (argc == 2 && !strcmp(argv[1], "--copy-logs")) {
+        return evo::copyLogsToUsb();
+    }
     if (argc != 2 || (!strcmp(argv[1], "--help"))) {
         puts(
-            "Usage: aa-supervisor --service | --compat | --recover\n"
+            "Usage: aa-supervisor --service | --compat | --recover | --copy-logs\n"
             "  --service  started by the iDrive app: wireless Android Auto with no time limit, stopped by the app or\n"
             "             STOP; the BMW hotspot switched on as Apple CarPlay does when it is off. With the file\n"
             "             /var/local/data/AA/usb: Android Auto over a USB cable, Bluetooth and Wi-Fi untouched\n"
             "  --compat   what a start would find on this car, changing nothing\n"
-            "  --recover  gives Bluetooth back after an unconfirmed stop (journal in the current folder)");
+            "  --recover  gives Bluetooth back after an unconfirmed stop (journal in the current folder)\n"
+            "  --copy-logs  the app's and the service's logs onto the USB stick (exit 0 copied, 3 no stick, 4 no log,\n"
+            "             5 write failed)");
         return argc == 2 ? 0 : 2;
     }
     const bool service = !strcmp(argv[1], "--service"), restore = !strcmp(argv[1], "--recover");

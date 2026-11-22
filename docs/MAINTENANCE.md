@@ -17,7 +17,7 @@ Le service ne lit aucun réglage dans son environnement : ses valeurs sont fixes
 | `kombi-off` | Présent : rien n'est envoyé au compteur ni à la tête haute |
 | `kombi-single-maneuver` | Présent au démarrage : graphe limité à la prochaine manœuvre, pour un compteur qui refuse le trajet complet (voir ci-dessous). Sans ce fichier : graphe historique |
 | `gps-telephone` | Présent : le téléphone garde son propre GPS, celui de la voiture n'est pas transmis |
-| `maintenance` | Présent : l'appli et le service gardent leurs journaux |
+| `maintenance` | Présent : l'appli et le service gardent leurs journaux (case *Garder les journaux* du menu, voir [Journaux](#journaux)) |
 
 Exemple, couper le guidage sur le compteur, puis le rétablir :
 
@@ -64,6 +64,23 @@ pas encore en voiture. NAV et le bouton natif CarLife ne font pas partie de ce r
 
 Sans le fichier `maintenance`, rien n'est journalisé, ni sur la mémoire flash ni en mémoire vive. Pour chercher une
 panne : activer les journaux, reproduire, les récupérer, puis les couper.
+
+### Sans PC, depuis le menu Android Auto de l'iDrive
+
+1. Cocher *Garder les journaux*, qui crée le fichier `maintenance`. Le journal de l'appli commence aussitôt, celui du
+   service au prochain *Démarrer* (ou au prochain démarrage de l'iDrive).
+2. Reproduire la panne. Les journaux restent après le sommeil de la voiture.
+3. Brancher une clé USB (FAT32, exFAT ou NTFS), puis choisir *Copier les journaux sur clé USB*. La ligne dit ce qui
+   s'est passé : *Copie des journaux...*, puis *Journaux copiés sur la clé USB*, *Aucune clé USB trouvée*, *Aucun
+   journal : cochez Garder* ou *Copie impossible* (clé pleine, protégée ou retirée). Les journaux sont dans le dossier
+   `EntryAA-logs/<date>` de la clé, avec la version du logiciel de l'unité et un `info.txt` qui les liste. Rien n'est
+   effacé ni changé sur l'unité.
+4. Décocher *Garder les journaux*. Les journaux déjà écrits restent sur l'unité, pour une copie plus tard.
+
+Les journaux ne contiennent ni mot de passe ni adresse Wi-Fi ou Bluetooth ; ils peuvent contenir le nom Bluetooth du
+téléphone.
+
+### En SSH
 
 ```sh
 touch /var/local/data/AA/maintenance

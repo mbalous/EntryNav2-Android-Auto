@@ -39,5 +39,6 @@ body:
     attributes:
       label: Logs
       description: |
-        With logs switched on (docs/MAINTENANCE.md): /var/local/data/AA/app.log and /tmp/entry-aa-service.log.
+        With logs switched on (Keep logs in the Android Auto menu, docs/MAINTENANCE.md): the files of
+        Copy logs to USB stick, or /var/local/data/AA/app.log and service.log over SSH.
         Drag the files here.

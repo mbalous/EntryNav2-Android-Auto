@@ -13,6 +13,14 @@ QEMU with the car's libraries).
 
 ## [Unreleased]
 
+### Added
+
+- Logs without a PC or SSH. The Android Auto menu in iDrive has two more rows: *Keep logs*, which turns the logs on
+  (the `maintenance` file), and *Copy logs to USB stick*, which copies them onto a USB stick plugged into the car, in
+  an `EntryAA-logs/<date>` folder, with the head unit's software version. The row then says whether the copy worked,
+  or that there is no stick or no log. Nothing is deleted or changed on the head unit
+  ([maintenance](docs/MAINTENANCE.md#journaux)). Tested on PC.
+
 ### Fixed
 
 - Service log lost when the car went to sleep: it lived in RAM (`/tmp`), and the log of a drive was gone before it

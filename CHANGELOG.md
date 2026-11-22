@@ -8,6 +8,14 @@ QEMU avec les bibliothèques de la voiture).
 
 ## [Non publié]
 
+### Ajouté
+
+- Journaux sans PC ni SSH. Le menu Android Auto de l'iDrive a deux lignes de plus : *Garder les journaux*, qui active
+  les journaux (le fichier `maintenance`), et *Copier les journaux sur clé USB*, qui les copie sur une clé USB
+  branchée dans la voiture, dans un dossier `EntryAA-logs/<date>`, avec la version du logiciel de l'unité. La ligne
+  dit ensuite si la copie a marché, s'il n'y a pas de clé ou pas de journal. Rien n'est effacé ni changé sur l'unité
+  ([maintenance](docs/MAINTENANCE.md#journaux)). Testé sur PC.
+
 ### Corrigé
 
 - Journal du service perdu au sommeil de la voiture : il était en mémoire vive (`/tmp`), et celui d'un trajet avait
