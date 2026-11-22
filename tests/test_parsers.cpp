@@ -63,6 +63,23 @@ void uapsdCases() {
     CHECK(withdraw(hostapd, {"OKAY\n"}) == evo::UapsdOffer::kSetRefused);
     CHECK(withdraw(hostapd, {"OK\n", "", "FAIL\n"}) == evo::UapsdOffer::kReloadRefused);
     CHECK(withdraw(hostapd, {"OK\n", "", "!"}) == evo::UapsdOffer::kReloadRefused);
+    // The beacon already rebuilt for this hostapd start: the setting again, never a second RELOAD (a phone that comes
+    // back reopens its Bluetooth link every 400 ms or so while it joins).
+    hostapd.replies.assign({"OK\n", "", "OK\n"});
+    hostapd.sent.clear();
+    CHECK(evo::withdrawUapsd(std::ref(hostapd), true) == evo::UapsdOffer::kAlreadyDone);
+    CHECK(hostapd.sent.size() == 1 && hostapd.sent[0] == "set uapsd_advertisement_enabled 0");
+    hostapd.replies.assign({"FAIL\n"});
+    hostapd.sent.clear();
+    CHECK(evo::withdrawUapsd(std::ref(hostapd), true) == evo::UapsdOffer::kSetRefused);
+    // Which hostapd start: its control socket's identity; unknown is never the same start.
+    evo::HostapdStart a, b, unknown;
+    a.device = b.device = 1;
+    a.inode = b.inode = 42;
+    a.known = b.known = true;
+    CHECK(a.same(b) && !a.same(unknown) && !unknown.same(unknown));
+    b.inode = 43;  // hostapd started again: a new socket
+    CHECK(!a.same(b));
     CHECK(strstr(evo::describeUapsdOffer(evo::UapsdOffer::kSetRefused), "left on"));
 }
 

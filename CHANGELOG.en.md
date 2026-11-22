@@ -29,6 +29,11 @@ QEMU with the car's libraries).
   partition like the app's: 512 KB at most, plus the previous 512 KB in `service.old.log`, checked every 5 s so that
   it never fills the partition. `/tmp/entry-aa-service.log` stays as a link to it. If the partition refuses to open
   it, it goes back to RAM as before. Tested on PC.
+- Wireless: after a drop, the phone took 3 to 7 s to come back instead of 2 s with 0.13.0-rc.8
+  ([discussion #30](https://github.com/Jiraiya43/EntryNav2-Android-Auto/discussions/30), F45). While it joins the
+  Wi-Fi, the phone reopens its Bluetooth link about every 400 ms, and the service had the access point rebuild its
+  beacon each time (up to 6 times in 4 s), which can disconnect it mid-join. The beacon is now rebuilt once per
+  start of the access point; the setting itself is still made each time. Tested on PC.
 
 ## [0.13.0-rc.8] - 2026-11-22 · PC
 

@@ -7,6 +7,7 @@
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -29,10 +30,28 @@ static bool queryHostapd(std::string& out) {
 }
 // RELOAD derives the passphrase's key again: more time than a query.
 static const int kChangeTimeoutMs = 5000;
+static HostapdStart currentHostapdStart() {
+    HostapdStart start;
+    struct stat st;
+    if (stat("/var/run/hostapd/wlan0", &st) == 0) {
+        start.device = st.st_dev;
+        start.inode = st.st_ino;
+        start.known = true;
+    }
+    return start;
+}
+// The wireless loop's thread only.
 UapsdOffer withdrawAccessPointUapsd() {
-    return withdrawUapsd([](const std::vector<std::string>& command, std::string& reply) {
-        return callHostapd(command, reply, kChangeTimeoutMs);
-    });
+    static HostapdStart rebuiltFor;  // the hostapd start whose beacon was rebuilt
+    const HostapdStart now = currentHostapdStart();
+    const UapsdOffer offer =
+        withdrawUapsd([](const std::vector<std::string>& command,
+                         std::string& reply) { return callHostapd(command, reply, kChangeTimeoutMs); },
+                      now.same(rebuiltFor));
+    if (offer == UapsdOffer::kWithdrawn) {
+        rebuiltFor = now;
+    }
+    return offer;
 }
 static bool macAddress(const std::string& value) {
     if (value.size() != 17) {

@@ -25,6 +25,12 @@ QEMU avec les bibliothèques de la voiture).
   sur la partition de données, comme celui de l'appli : 512 Ko au plus, plus les 512 Ko d'avant dans
   `service.old.log`, surveillé toutes les 5 s pour ne jamais remplir la partition. `/tmp/entry-aa-service.log` reste
   un lien vers lui. Si la partition refuse de l'ouvrir, il retourne en mémoire vive comme avant. Testé sur PC.
+- Sans-fil : après une coupure, le téléphone mettait 3 à 7 s à revenir au lieu de 2 s avec la 0.13.0-rc.8
+  ([discussion #30](https://github.com/Jiraiya43/EntryNav2-Android-Auto/discussions/30), F45). Pendant qu'il rejoint
+  le Wi-Fi, le téléphone rouvre son lien Bluetooth toutes les 400 ms environ, et le service faisait reconstruire la
+  balise du point d'accès à chaque fois (jusqu'à 6 fois en 4 s), au risque de le déconnecter en pleine connexion. La
+  balise n'est plus reconstruite qu'une fois par démarrage du point d'accès ; le réglage, lui, est toujours refait.
+  Testé sur PC.
 
 ## [0.13.0-rc.8] - 2026-11-22 · PC
 
