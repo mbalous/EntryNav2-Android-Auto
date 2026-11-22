@@ -35,9 +35,9 @@ protected:
 // Runs until a stop is requested or Bluetooth stops. Each link that comes up gets aa::WirelessSetup with the access
 // point and TCP port the phone is told, after a short listen (a MyBMW link speaks first: nothing is written into it);
 // once the phone accepts, the link is served until it closes, or until a session is lost while nothing else runs: the
-// link is then closed, the phone opens it again and gets a new handshake (a phone that keeps the link never comes back
-// on its own). A link that comes up while a projection is busy is listened to (a ping is answered, nothing else is
-// sent) until it closes or that projection ends.
+// Bluetooth stack is then asked to drop the link, the phone opens it again and gets a new handshake (a phone that
+// keeps the link never comes back on its own). A link that comes up while a projection is busy is listened to (a ping
+// is answered, nothing else is sent) until it closes or that projection ends.
 void runWirelessLoop(AlpsSppLink& bt, const aa::ApInfo& ap, uint16_t port, WirelessHost& host);
 
 }  // namespace evo
