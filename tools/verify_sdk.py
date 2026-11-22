@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Jiraiya43
+# Copyright (c) 2026 mbalous
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Statically check the isolated SDK outputs; this is not car-library or release validation."""
 

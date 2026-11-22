@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Jiraiya43
+# Copyright (c) 2026 mbalous
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Focused tests for the SDK ELF contract checks."""
 
