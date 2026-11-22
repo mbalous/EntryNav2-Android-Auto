@@ -8,6 +8,12 @@ QEMU avec les bibliothèques de la voiture).
 
 ## [Non publié]
 
+## [0.13.0-rc.9] - 2026-11-22 · PC
+
+Version candidate : des journaux sans PC (gardés après le sommeil de la voiture, copiés sur clé USB depuis le menu
+de l'iDrive) et un sans-fil qui revient vite après une coupure (lien Bluetooth coupé par la pile de la voiture,
+balise du point d'accès reconstruite une seule fois). Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
+
 ### Ajouté
 
 - SDK ARM facultatif : compilation des programmes sans copie du système de la voiture, avec des stubs utilisés
@@ -35,6 +41,11 @@ QEMU avec les bibliothèques de la voiture).
   balise du point d'accès à chaque fois (jusqu'à 6 fois en 4 s), au risque de le déconnecter en pleine connexion. La
   balise n'est plus reconstruite qu'une fois par démarrage du point d'accès ; le réglage, lui, est toujours refait.
   Testé sur PC.
+- Sans-fil : la relance du téléphone après une coupure (0.13.0-rc.7) ne coupait le lien Bluetooth que de notre côté.
+  Le téléphone ne voyait rien et continuait d'attendre : revenu en 70 s, ou pas du tout, sur la MINI F56 de
+  [#88](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/88). Le service demande maintenant à la pile
+  Bluetooth de la voiture de couper ce lien, comme le fait Arrêter : le téléphone le voit se fermer, le rouvre et
+  reçoit une nouvelle demande, comme après Arrêter puis Démarrer, où il revenait en 2 s. Testé sur PC.
 
 ## [0.13.0-rc.8] - 2026-11-22 · PC
 
@@ -577,7 +588,8 @@ Première version publique. Essayée sur une BMW G20 de 2019, logiciel iDrive `2
   encore suivie sur une voiture.
 - Voir les [limites connues](ROADMAP.md#limites-connues).
 
-[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.8...HEAD
+[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.9...HEAD
+[0.13.0-rc.9]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.9
 [0.13.0-rc.8]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.8
 [0.13.0-rc.7]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.7
 [0.13.0-rc.6]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.6

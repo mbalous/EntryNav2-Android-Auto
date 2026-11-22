@@ -48,7 +48,10 @@ void runWirelessLoop(AlpsSppLink& bt, const aa::ApInfo& ap, uint16_t port, Wirel
             // A phone that keeps this link after its session was lost (Wi-Fi stalled 5 s) waits forever: seen on a
             // MINI F56 with a Galaxy Z Fold, back in 2 s once the link was closed by a manual restart. So the link is
             // closed as soon as a session is lost while nothing else runs; a phone already back over Wi-Fi is left
-            // alone, and a ByeBye (the user left Android Auto) is not a loss.
+            // alone, and a ByeBye (the user left Android Auto) is not a loss. Closed by the Bluetooth stack, as the
+            // supervisor's stop does (BtApplDeviceDisconnectReq): closeLink() alone only closes our end, and the
+            // phone, which never sees it, went on waiting (back in 70 s, or not at all, on the same F56 with
+            // 0.13.0-rc.7).
             unsigned lost = host.lostSessions();
             while (!host.stopRequested() && bt.linkUp() && setup.serve(1000)) {
                 const unsigned now = host.lostSessions();
@@ -59,8 +62,10 @@ void runWirelessLoop(AlpsSppLink& bt, const aa::ApInfo& ap, uint16_t port, Wirel
                     lost = now;  // replaced by a new connection already
                     continue;
                 }
-                ELOG("WirelessLoop",
-                     "session lost while the phone kept this Bluetooth link: closing it to start again");
+                const bool asked = bt.requestSppDisconnect();
+                ELOG("WirelessLoop", "session lost while the phone kept this Bluetooth link: %s",
+                     asked ? "the Bluetooth stack is asked to drop it, the phone starts again"
+                           : "drop request not sent to the Bluetooth stack, closed on our side only");
                 break;
             }
         }
