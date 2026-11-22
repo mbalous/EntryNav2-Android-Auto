@@ -8,6 +8,13 @@ QEMU avec les bibliothèques de la voiture).
 
 ## [Non publié]
 
+## [0.13.0-rc.8] - 2026-11-22 · PC
+
+Version candidate : un sans-fil plus solide (plus d'U-APSD proposé au téléphone, séance relancée après un envoi raté
+ou un chiffrement cassé, Bluetooth rendu à l'arrêt), une image qui ne fige plus après des messages perdus ou un
+décodeur bloqué, le côté du conducteur lu dans le codage de la voiture, plus d'écran vide après la marche arrière.
+Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
+
 ### Ajouté
 
 - Côté du conducteur lu dans le codage de la voiture : l'appli iDrive demande à l'iDrive si la voiture est codée
@@ -73,9 +80,9 @@ QEMU avec les bibliothèques de la voiture).
 - Description de la voiture : le téléphone recevait toujours celle du modèle de Google (le Desktop Head Unit), soit
   une conduite à gauche, l'essence plus l'électrique et une prise de recharge Tesla Supercharger. Une voiture à volant
   à droite était donc annoncée à gauche, et Android Auto disposait son écran pour le mauvais côté. Le fichier
-  `vehicle` accepte maintenant `side=left` ou `side=right` et `fuel=petrol` ou `fuel=diesel` (sans eux : conduite à
-  gauche, essence) ; le téléphone reçoit le côté du conducteur, un seul carburant et aucune prise de recharge
-  ([installation](docs/INSTALLATION.md)). Testé sur PC.
+  `vehicle` accepte maintenant `side=left` ou `side=right` et `fuel=petrol` ou `fuel=diesel` (sans eux : le côté codé
+  dans la voiture, voir « Ajouté », et l'essence) ; le téléphone reçoit le côté du conducteur, un seul carburant et
+  aucune prise de recharge ([installation](docs/INSTALLATION.md)). Testé sur PC.
 - Toucher : quand l'image d'Android Auto s'effaçait (volume, fenêtre de l'iDrive, marche arrière, MENU) au moment où
   le doigt se levait, le téléphone pouvait garder ce doigt posé jusqu'au toucher suivant. Le relâché arrivé juste après
   le départ de l'image n'était pas envoyé, et le service oubliait ce doigt sans plus rien avoir à relâcher. Le relâché
@@ -542,7 +549,8 @@ Première version publique. Essayée sur une BMW G20 de 2019, logiciel iDrive `2
   encore suivie sur une voiture.
 - Voir les [limites connues](ROADMAP.md#limites-connues).
 
-[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.7...HEAD
+[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.8...HEAD
+[0.13.0-rc.8]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.8
 [0.13.0-rc.7]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.7
 [0.13.0-rc.6]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.6
 [0.13.0-rc.5]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.5
