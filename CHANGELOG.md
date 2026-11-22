@@ -8,6 +8,12 @@ QEMU avec les bibliothèques de la voiture).
 
 ## [Non publié]
 
+## [0.13.0-rc.9] - 2026-11-22 · PC
+
+Version candidate : des journaux sans PC (gardés après le sommeil de la voiture, copiés sur clé USB depuis le menu
+de l'iDrive) et un sans-fil qui revient vite après une coupure (lien Bluetooth coupé par la pile de la voiture,
+balise du point d'accès reconstruite une seule fois). Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
+
 ### Ajouté
 
 - Journaux sans PC ni SSH. Le menu Android Auto de l'iDrive a deux lignes de plus : *Garder les journaux*, qui active
@@ -578,7 +584,8 @@ Première version publique. Essayée sur une BMW G20 de 2019, logiciel iDrive `2
   encore suivie sur une voiture.
 - Voir les [limites connues](ROADMAP.md#limites-connues).
 
-[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.8...HEAD
+[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.9...HEAD
+[0.13.0-rc.9]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.9
 [0.13.0-rc.8]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.8
 [0.13.0-rc.7]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.7
 [0.13.0-rc.6]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.6

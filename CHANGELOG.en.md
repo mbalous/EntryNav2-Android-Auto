@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > This is a translation of the authoritative [French changelog](CHANGELOG.md), based on
-> [`v0.13.0-rc.8`](https://github.com/Jiraiya43/EntryNav2-Android-Auto/blob/v0.13.0-rc.8/CHANGELOG.md).
+> [`v0.13.0-rc.9`](https://github.com/Jiraiya43/EntryNav2-Android-Auto/blob/v0.13.0-rc.9/CHANGELOG.md).
 > It may become outdated; consult the French changelog for the source of truth.
 
 All notable changes to this project. Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -12,6 +12,12 @@ Each version states whether it was **tried in a car** or only **tested on a PC**
 QEMU with the car's libraries).
 
 ## [Unreleased]
+
+## [0.13.0-rc.9] - 2026-11-22 · PC
+
+Release candidate: logs without a PC (kept after the car sleeps, copied to a USB stick from the iDrive menu) and
+wireless that comes back quickly after a drop (Bluetooth link dropped by the car's stack, access point beacon
+rebuilt only once). Tested on PC and under QEMU, **not yet tried in a car**.
 
 ### Added
 
@@ -569,7 +575,8 @@ First public release. Tried in a 2019 BMW G20, iDrive software `202111011321`.
   been followed in a car.
 - See the [known limitations](ROADMAP.md#limites-connues).
 
-[Unreleased]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.8...HEAD
+[Unreleased]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.9...HEAD
+[0.13.0-rc.9]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.9
 [0.13.0-rc.8]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.8
 [0.13.0-rc.7]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.7
 [0.13.0-rc.6]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.6
