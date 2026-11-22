@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<plugin>
+	<name>EntryLiveData</name>
+	<type>App</type>
+	<file>{pluginDir}/EntryLiveData</file>
+	<config>
+		<autoStart>yes</autoStart>
+		<dependencies>
+			<pluginAppConnector>
+				<type>Etch</type>
+				<id>211</id>
+				<asyncCallbacks>yes</asyncCallbacks>
+			</pluginAppConnector>
+		</dependencies>
+		<parameters>
+			<DescFile>{pluginDir}/EntryLiveData.xml</DescFile>
+			<TextDBFile>{pluginDir}/EntryLiveData_ALL_Texts.zip</TextDBFile>
+		</parameters>
+	</config>
+</plugin>

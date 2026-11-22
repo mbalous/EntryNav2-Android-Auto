@@ -4,6 +4,26 @@ Tout se règle par de petits fichiers dans `/var/local/data/AA`, sur la partitio
 Un changement vaut au prochain démarrage d'Android Auto (menu *Arrêter* puis *Démarrer*). Les commandes se tapent dans une
 session SSH sur l'unité ([installation](INSTALLATION.md#1-copier-larchive-dans-la-voiture)).
 
+## Prototype « Données en direct »
+
+La cible `bash toolchain/tc.sh make live-data-prototype`, dans la chaîne ARM avec les bibliothèques de l'unité,
+compile un module séparé pour *Mon véhicule → Données en direct*. `make live-data-texts` génère sa base de textes sur
+le PC. Il n'est ni inclus dans les archives de publication ni installé avec Android Auto. Sur l'unité de référence
+(logiciel `202402191339`), l'entrée est visible après un redémarrage complet, et BACK revient à *Mon véhicule*.
+
+Le prototype lit le CDS natif, sans téléphone ni adaptateur, et suit l'unité de température de l'iDrive
+(°C par défaut). Le signal BMW CDS `engine.temperature` fournit la température du liquide de refroidissement
+(`temperature.engine`) et celle de l'huile (`temperature.oil`). Chaque valeur absente ou invalide est affichée
+comme *Indisponible*, indépendamment de l'autre.
+
+Chaque température disponible possède une jauge native de 0 à 120 °C, sans zone d'alerte. La jauge se limite aux
+extrémités de cette plage ; la valeur numérique, arrondie au degré, n'est pas limitée. En °F, la plage correspond à
+32–248 °F.
+
+Sur une unité de test où le prototype a été installé, créer `/var/local/data/EntryLiveData.disable` avant de redémarrer
+l'iDrive empêche le chargement de la page, sans toucher à Android Auto. Le retrait du dossier du prototype reste
+le moyen de revenir à l'installation précédente.
+
 ## Réglages
 
 Le service ne lit aucun réglage dans son environnement : ses valeurs sont fixes, dans le code.
