@@ -31,6 +31,11 @@ QEMU avec les bibliothèques de la voiture).
   balise du point d'accès à chaque fois (jusqu'à 6 fois en 4 s), au risque de le déconnecter en pleine connexion. La
   balise n'est plus reconstruite qu'une fois par démarrage du point d'accès ; le réglage, lui, est toujours refait.
   Testé sur PC.
+- Sans-fil : la relance du téléphone après une coupure (0.13.0-rc.7) ne coupait le lien Bluetooth que de notre côté.
+  Le téléphone ne voyait rien et continuait d'attendre : revenu en 70 s, ou pas du tout, sur la MINI F56 de
+  [#88](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/88). Le service demande maintenant à la pile
+  Bluetooth de la voiture de couper ce lien, comme le fait Arrêter : le téléphone le voit se fermer, le rouvre et
+  reçoit une nouvelle demande, comme après Arrêter puis Démarrer, où il revenait en 2 s. Testé sur PC.
 
 ## [0.13.0-rc.8] - 2026-11-22 · PC
 

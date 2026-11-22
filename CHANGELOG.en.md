@@ -34,6 +34,11 @@ QEMU with the car's libraries).
   Wi-Fi, the phone reopens its Bluetooth link about every 400 ms, and the service had the access point rebuild its
   beacon each time (up to 6 times in 4 s), which can disconnect it mid-join. The beacon is now rebuilt once per
   start of the access point; the setting itself is still made each time. Tested on PC.
+- Wireless: restarting the phone after a drop (0.13.0-rc.7) closed the Bluetooth link on our side only. The phone
+  saw nothing and kept waiting: back after 70 s, or not at all, on the MINI F56 of
+  [#88](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/88). The service now asks the car's Bluetooth
+  stack to drop that link, as Stop does: the phone sees it close, opens it again and gets a new request, as after
+  Stop then Start, where it came back within 2 s. Tested on PC.
 
 ## [0.13.0-rc.8] - 2026-11-22 · PC
 

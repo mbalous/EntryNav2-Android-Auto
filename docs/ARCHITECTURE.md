@@ -52,7 +52,7 @@ Le protocole Android Auto côté voiture, sans rien de propre à BMW.
 | `main.cpp` | Ligne de commande du service et assemblage des modules |
 | `service_app` | Le service en marche : réactions à la session, à la vidéo, aux entrées et aux commandes de l'appli |
 | `peek_timing` | Quand effacer l'image d'Android Auto : volume, fenêtres de l'iDrive, mode de conduite, touches (testé sur PC) |
-| `wireless_loop` | Boucle d'attente du téléphone en Bluetooth, puis de sa connexion Wi-Fi ; ferme le lien Bluetooth gardé par le téléphone après une séance perdue, pour qu'il revienne |
+| `wireless_loop` | Boucle d'attente du téléphone en Bluetooth, puis de sa connexion Wi-Fi ; fait couper par la pile Bluetooth le lien gardé par le téléphone après une séance perdue, pour qu'il revienne |
 | `usb_loop`, `usb_accessory` | Mode USB : repère un téléphone Android sur les prises, le passe en mode accessoire |
 | `usb_bridge`, `usb_devfs` | Mode USB : pont entre le téléphone (usbfs du noyau) et la session, par un socket local |
 | `service_contract.hpp` | Chemins et nom du canal de commande partagés par l'appli iDrive, le superviseur et le service |
