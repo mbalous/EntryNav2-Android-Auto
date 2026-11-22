@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Jiraiya43
+# Copyright (c) 2026 mbalous
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Optional link-only SDK, built on the existing GCC 4.7 image. No head-unit files are used.
 ARG BASE_IMAGE=entrynav2-tc:4.7
