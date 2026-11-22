@@ -88,13 +88,24 @@ aa-supervisor: $(SUPERVISOR_OBJ)
 HMI_SRC = hmiapp/entry_aa_app.cpp hmiapp/bmw_framework.cpp hmiapp/app_log.cpp hmiapp/app_guards.cpp \
           hmiapp/service_link.cpp hmiapp/car_signals.cpp hmiapp/hold_machine.cpp hmiapp/idrive_coding.cpp
 HMI_OBJ = $(HMI_SRC:.cpp=.o)
+LIVE_DATA_OBJ = hmiapp/live_data_app.o hmiapp/bmw_framework.o
 HMI_LIBDIRS = -L$(SYSROOT)/opt/hmi/lib -Wl,-rpath-link,$(SYSROOT)/opt/hmi/lib
 hmiapp: hmiapp/libEntryAad.so
-$(HMI_OBJ): hmiapp/%.o: hmiapp/%.cpp
+$(sort $(HMI_OBJ) $(LIVE_DATA_OBJ)): hmiapp/%.o: hmiapp/%.cpp
 	$(CXX) $(CXXFLAGS) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -MMD -MP -c $< -o $@
 hmiapp/libEntryAad.so: $(HMI_OBJ)
 	$(CXX) $(CXXFLAGS) -fPIC -shared -Wl,-soname,libEntryAad.so $^ -o $@ \
 	    $(LDSHLIB) $(HMI_LIBDIRS) -l:libAppFramework.A.so -l:libCoreFramework.A.so -lpthread -ldl
+
+# Reference-firmware prototype only; not included in all or release packages.
+.PHONY: live-data-prototype live-data-texts
+live-data-prototype: hmiapp/libEntryLiveData.so
+live-data-texts: hmiapp/EntryLiveData_ALL_Texts.zip
+hmiapp/libEntryLiveData.so: $(LIVE_DATA_OBJ)
+	$(CXX) $(CXXFLAGS) -fPIC -shared -Wl,-z,defs,-soname,libEntryLiveData.so $^ -o $@ \
+	    $(LDSHLIB) $(HMI_LIBDIRS) -l:libAppFramework.A.so -l:libCoreFramework.A.so -ldl -lrt
+hmiapp/EntryLiveData_ALL_Texts.zip: hmiapp/make_db.py
+	python3 $< hmiapp/res hmiapp --live-data
 
 # SDK-only strict link: the HMI supplies clock_gettime through librt, so resolve it for this throwaway link.
 .PHONY: sdk-link-check
@@ -370,6 +381,7 @@ test-wireless-lifecycle-arm-build: $(CORE_OBJ) $(LIFECYCLE_OBJ)
 clean:
 	rm -f $(ARM_OBJ) $(ARM_OBJ:.o=.d) $(HMI_OBJ) $(HMI_OBJ:.o=.d) entry-aad aa-supervisor evo-check evo-capture \
 	    hmiapp/libEntryAad.so hmiapp/EntryAad_ALL_Texts.zip hmiapp/EntryAad_ALL_Images.zip \
+	    hmiapp/live_data_app.o hmiapp/live_data_app.d hmiapp/libEntryLiveData.so hmiapp/EntryLiveData_ALL_Texts.zip \
 	    tests/test-* tests/evo-check-host tests/*.so
 
--include $(ARM_OBJ:.o=.d) $(HMI_OBJ:.o=.d)
+-include $(ARM_OBJ:.o=.d) $(HMI_OBJ:.o=.d) $(LIVE_DATA_OBJ:.o=.d)

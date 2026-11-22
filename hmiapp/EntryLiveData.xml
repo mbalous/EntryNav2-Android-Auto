@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pluginApps>
+  <pluginApp applicationType="Custom" applicationWeight="800" entryButtonFocusID="32753" insertStateID="60" insertAfterFocusID="1574" text="Live Data">
+    <entryButton action="1" id="1" model="2" previewModel="40">
+      <properties/>
+    </entryButton>
+    <actions>
+      <raAction id="1"/>
+    </actions>
+    <models>
+      <textIdModel id="2" textId="1"/>
+      <textIdModel id="3" textId="2"/>
+      <raDataModel id="4"/>
+      <textIdModel id="5" textId="3"/>
+      <raDataModel id="6"/>
+      <textIdModel id="7" textId="4"/>
+      <raGaugeModel id="30" modelType="Progress" min="0" max="120" value="0" increment="1"/>
+      <raGaugeModel id="31" modelType="Progress" min="0" max="120" value="0" increment="1"/>
+      <raPreviewModel id="40" modelType="StatePreview" previewState="10"/>
+    </models>
+    <events>
+      <focusEvent id="8" target="10"/>
+    </events>
+    <hmiStates>
+      <hmiState id="10" text="Live Data" textModel="2">
+        <components>
+          <label id="11" model="3"/>
+          <label id="12" model="4">
+            <properties><property id="3" value="false"/></properties>
+          </label>
+          <label id="13" model="7"/>
+          <gauge id="32" model="30">
+            <properties><property id="2" value="false"/><property id="3" value="false"/></properties>
+          </gauge>
+          <label id="14" model="5"/>
+          <label id="15" model="6">
+            <properties><property id="3" value="false"/></properties>
+          </label>
+          <label id="16" model="7"/>
+          <gauge id="33" model="31">
+            <properties><property id="2" value="false"/><property id="3" value="false"/></properties>
+          </gauge>
+        </components>
+      </hmiState>
+    </hmiStates>
+  </pluginApp>
+</pluginApps>

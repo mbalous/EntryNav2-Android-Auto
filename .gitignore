@@ -34,6 +34,7 @@
 *.so
 __pycache__/
 /hmiapp/EntryAad_ALL_*.zip
+/hmiapp/EntryLiveData_ALL_Texts.zip
 
 # tests/: sources and fixtures only, without the tests of the older kits
 /tests/*
