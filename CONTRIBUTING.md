@@ -2,7 +2,7 @@
 
 *Contributions in English are welcome too. The project documentation is in French; code, comments and commit
 scopes are in English. Pull requests are squash-merged: the pull request title (Conventional Commits) becomes the
-commit title, in French; an English title is translated at merge time. No need to rebase or reword your commits.*
+commit title. No need to rebase or reword your commits.*
 
 Merci de votre intérêt ! Le plus utile, par ordre :
 
@@ -92,12 +92,11 @@ l'iDrive en français. Chaque fichier source commence par :
 
 - Une branche par sujet, partie de `main` : `fix/…`, `feat/…`, `docs/…`.
 - Messages au format [Conventional Commits](https://www.conventionalcommits.org/fr/) : `type(portée): description` en
-  français, à l'impératif ou au constat, 72 caractères au plus. Types : `feat`, `fix`, `refactor`, `perf`, `test`,
+  français ou en anglais, à l'impératif ou au constat, 72 caractères au plus. Types : `feat`, `fix`, `refactor`, `perf`, `test`,
   `docs`, `build`, `ci`, `chore`. Le corps explique pourquoi.
 - Un commit = un changement cohérent qui compile et passe `make check`.
 - Les demandes de fusion entrent dans `main` par squash : un seul commit, au titre de la demande suivi de `(#N)`.
-  Ce titre suit donc les règles ci-dessus (la CI le vérifie) ; un titre en anglais est mis en français à la fusion.
-  Pas besoin de rebaser ni de réécrire ses commits.
+  Ce titre suit donc les règles ci-dessus. Pas besoin de rebaser ni de réécrire ses commits.
 - Les versions suivent [SemVer](https://semver.org/lang/fr/) et sont marquées par une étiquette `vX.Y.Z`.
 
 ## Publier une version
