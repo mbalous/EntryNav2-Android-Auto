@@ -70,5 +70,7 @@ jobs:
           docker build -f toolchain/Dockerfile.sdk -t entrynav2-sdk:4.7 toolchain
           HU_ROOTFS=/nonexistent-rootfs bash toolchain/tc.sh --sdk make -j4 all
       - name: Check ARM ELF contracts
-        run: /usr/bin/python3 tools/verify_sdk.py
+        run: |
+          /usr/bin/python3 tools/verify_sdk.py
+          /usr/bin/python3 -m unittest discover -s tests -p test_sdk_artifact.py
 
