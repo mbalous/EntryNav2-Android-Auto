@@ -107,6 +107,19 @@ Apps est lu dans la mémoire de la pile Bluetooth BMW, comme au démarrage, sans
 Auto occupe lui-même l'emplacement des BMW Apps (`takes SPP 0` dans le journal du superviseur). Par câble USB, il n'y a
 pas de ligne `[WifiLink]`.
 
+Avant chaque échange Wi-Fi avec le téléphone, le service demande au point d'accès de la voiture de ne plus proposer
+U-APSD, une économie d'énergie du téléphone, et écrit une ligne `car access point:` (journal du service, toujours) :
+
+| Fin de la ligne | Sens |
+|---|---|
+| `beacon rebuilt` | Fait : le téléphone rejoint le Wi-Fi sans U-APSD |
+| `a station is associated` | Un appareil était déjà sur le Wi-Fi de la voiture (téléphone revenu, iPhone en CarPlay) : personne n'est déconnecté, et cet appareil garde U-APSD jusqu'à sa prochaine connexion |
+| `RELOAD refused` | hostapd a pris le réglage mais pas la reconstruction de sa balise : le téléphone peut encore demander U-APSD |
+| `left on` | hostapd a refusé le réglage ou n'a pas répondu : rien n'a changé |
+
+Le réglage est fait dans la mémoire de hostapd, jamais dans un fichier de la voiture : un redémarrage de l'unité, ou
+de hostapd par le système, remet celui de BMW.
+
 ### Silences du téléphone et espacement des images
 
 Journaux activés, le service écrit aussi une ligne `[Session]` toutes les 10 secondes d'une session, sans fil ou USB :

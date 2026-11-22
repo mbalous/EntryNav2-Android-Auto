@@ -97,6 +97,16 @@ QEMU avec les bibliothèques de la voiture).
   maintenant comme un choix d'Android Auto, qui reste affiché jusqu'au prochain changement de l'aide au
   stationnement. Le journal du service ne dit plus « picture back » en sortant de la marche arrière quand l'aide au
   stationnement cache encore l'image. Testé sur PC.
+- Sans-fil : image et son par à-coups avec certains téléphones
+  ([#138](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/138), X1 F48). Le Wi-Fi de la voiture propose
+  U-APSD, une économie d'énergie du téléphone, et la puce Wi-Fi retenait alors ses trames plusieurs secondes : sur la
+  X1 F48 de peppearci, son compteur d'attentes U-APSD dépassées montait à 1700 en 12 minutes, et les à-coups ont
+  disparu sans U-APSD. Avant chaque échange Wi-Fi avec le téléphone, le service règle maintenant hostapd pour ne
+  plus le proposer, puis lui fait reconstruire sa balise, d'après laquelle le téléphone demande U-APSD en se
+  connectant. Cette reconstruction déconnecte les appareils présents : elle n'est faite que si aucun n'est sur le
+  Wi-Fi de la voiture, un iPhone en CarPlay n'est donc jamais coupé. Le réglage reste en mémoire, aucun fichier de la
+  voiture ne change. Le journal du service dit ce qui a été fait (ligne `car access point:`,
+  [maintenance](docs/MAINTENANCE.md)). Testé sur PC.
 
 ## [0.13.0-rc.7] - 2026-11-20 · PC
 

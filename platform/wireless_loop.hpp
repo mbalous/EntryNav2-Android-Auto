@@ -19,6 +19,9 @@ public:
     // A phone connection is being prepared or its Android Auto session runs: no new handshake meanwhile.
     virtual bool projectionBusy() = 0;
     virtual void sppLinkOpened() = 0;
+    // Just before the phone is told the access point: the next phone that joins it must be offered no U-APSD
+    // (ap_uapsd.hpp). Made each time, as wland can start hostapd again from its own file.
+    virtual void prepareAccessPoint() = 0;
     // A handshake ended: the phone spoke the wireless protocol, it accepted the Wi-Fi.
     virtual void handshakeEnded(bool spoke, bool accepted) = 0;
     // Wireless sessions lost so far: ended without the phone's ByeBye (silent phone, broken connection). A count, so

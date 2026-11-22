@@ -18,15 +18,21 @@
 #include "evo_process.hpp"
 
 namespace evo {
+// One hostapd_cli command on the car's access point (wlan0); false when it could not run or ended in error.
+static bool callHostapd(const std::vector<std::string>& command, std::string& out, int timeoutMs) {
+    std::vector<std::string> args = {"-p", "/var/run/hostapd", "-i", "wlan0"};
+    args.insert(args.end(), command.begin(), command.end());
+    return runCommand("/usr/sbin/hostapd_cli", args, out, timeoutMs);
+}
 static bool queryHostapd(std::string& out) {
-    const char* const cli = "/usr/sbin/hostapd_cli";
-    std::vector<std::string> args;
-    args.push_back("-p");
-    args.push_back("/var/run/hostapd");
-    args.push_back("-i");
-    args.push_back("wlan0");
-    args.push_back("get_config");
-    return runCommand(cli, args, out);
+    return callHostapd(std::vector<std::string>{"get_config"}, out, 2000);
+}
+// RELOAD derives the passphrase's key again: more time than a query.
+static const int kChangeTimeoutMs = 5000;
+UapsdOffer withdrawAccessPointUapsd() {
+    return withdrawUapsd([](const std::vector<std::string>& command, std::string& reply) {
+        return callHostapd(command, reply, kChangeTimeoutMs);
+    });
 }
 static bool macAddress(const std::string& value) {
     if (value.size() != 17) {
