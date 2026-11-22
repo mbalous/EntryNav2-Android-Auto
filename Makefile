@@ -183,6 +183,8 @@ test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture
 	./tests/test-pending-restart
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_log_profile.cpp -o tests/test-log-profile
 	./tests/test-log-profile
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_kept_log.cpp -o tests/test-kept-log
+	./tests/test-kept-log
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_pb.cpp -o tests/test-pb
 	./tests/test-pb
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_volume_pill.cpp -o tests/test-volume-pill

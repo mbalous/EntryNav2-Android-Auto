@@ -13,6 +13,15 @@ QEMU with the car's libraries).
 
 ## [Unreleased]
 
+### Fixed
+
+- Service log lost when the car went to sleep: it lived in RAM (`/tmp`), and the log of a drive was gone before it
+  could be fetched ([#101](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/101),
+  [#88](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/88)). With logs on, it now lives on the data
+  partition like the app's: 512 KB at most, plus the previous 512 KB in `service.old.log`, checked every 5 s so that
+  it never fills the partition. `/tmp/entry-aa-service.log` stays as a link to it. If the partition refuses to open
+  it, it goes back to RAM as before. Tested on PC.
+
 ## [0.13.0-rc.8] - 2026-11-22 · PC
 
 Release candidate: sturdier wireless (no U-APSD offered to the phone, session restarted after a failed send or a

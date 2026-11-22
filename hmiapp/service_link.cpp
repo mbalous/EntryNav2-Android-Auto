@@ -19,9 +19,9 @@
 #include <unistd.h>
 
 #include "../platform/control_address.hpp"
+#include "../platform/kept_log.hpp"
 #include "../platform/service_contract.hpp"
 #include "app_log.hpp"
-#include "log_profile.hpp"
 #include "mono_clock.hpp"
 #include "spawn_attr.hpp"
 
@@ -102,10 +102,11 @@ void launchService() {
 
     char* argv[] = {const_cast<char*>(contract::kSupervisor), const_cast<char*>("--service"), nullptr};
     int in = open("/dev/null", O_RDONLY | O_CLOEXEC);
-    int out = open(serviceLogPath(contract::kMaintenance, contract::kServiceLog),
-                   O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    const char* logPath = "";
+    int out = openServiceLog(contract::kMaintenance, contract::kServiceLogKept, contract::kServiceLogKeptOld,
+                             contract::kServiceLog, &logPath);
     if (in < 0 || out < 0) {
-        alog("launch: cannot open /dev/null or %s (errno %d)", contract::kServiceLog, errno);
+        alog("launch: cannot open /dev/null or %s (errno %d)", logPath, errno);
         if (in >= 0) {
             close(in);
         }
@@ -149,8 +150,7 @@ void launchService() {
         return;
     }
     g_launchPid = pid;
-    alog("launch: started %s --service pid %d (log %s)", contract::kSupervisor, static_cast<int>(pid),
-         contract::kServiceLog);
+    alog("launch: started %s --service pid %d (log %s)", contract::kSupervisor, static_cast<int>(pid), logPath);
     pthread_t t;
     pthread_attr_t ta;
     pthread_attr_init(&ta);

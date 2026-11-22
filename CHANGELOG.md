@@ -8,6 +8,16 @@ QEMU avec les bibliothèques de la voiture).
 
 ## [Non publié]
 
+### Corrigé
+
+- Journal du service perdu au sommeil de la voiture : il était en mémoire vive (`/tmp`), et celui d'un trajet avait
+  disparu avant qu'on puisse le récupérer
+  ([#101](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/101),
+  [#88](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/88)). Avec les journaux activés, il est maintenant
+  sur la partition de données, comme celui de l'appli : 512 Ko au plus, plus les 512 Ko d'avant dans
+  `service.old.log`, surveillé toutes les 5 s pour ne jamais remplir la partition. `/tmp/entry-aa-service.log` reste
+  un lien vers lui. Si la partition refuse de l'ouvrir, il retourne en mémoire vive comme avant. Testé sur PC.
+
 ## [0.13.0-rc.8] - 2026-11-22 · PC
 
 Version candidate : un sans-fil plus solide (plus d'U-APSD proposé au téléphone, séance relancée après un envoi raté

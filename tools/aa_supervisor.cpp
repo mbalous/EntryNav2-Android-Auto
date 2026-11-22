@@ -36,6 +36,7 @@
 #include "evo_log.hpp"
 #include "evo_spp_snapshot.hpp"
 #include "evo_wlan.hpp"
+#include "kept_log.hpp"
 #include "service_contract.hpp"
 #include "spp_baseline.hpp"
 #include "usb_accessory.hpp"
@@ -563,10 +564,21 @@ bool enterServiceDir() {
     }
     return chdir(evo::contract::kServiceDir) == 0;
 }
-// The iDrive app hands us an append-only log as stdout: keep it bounded (RAM).
+// The iDrive app hands us an append-only log as stdout: keep it bounded. On the data partition (kept_log.hpp): 512 KB,
+// the previous 512 KB in the old file. In /tmp (RAM): emptied at 16 MB.
 void boundLog() {
+    const evo::KeptLogTrim trim =
+        evo::trimKeptLog(1, evo::contract::kServiceLogKept, evo::contract::kServiceLogKeptOld, evo::kKeptLogMax);
+    if (trim == evo::KeptLogTrim::kMoved) {
+        ELOG("Supervisor", "log full (%ld KB): moved to %s", static_cast<long>(evo::kKeptLogMax / 1024),
+             evo::contract::kServiceLogKeptOld);
+    } else if (trim == evo::KeptLogTrim::kEmptied) {
+        ELOG("Supervisor", "log full (%ld KB): emptied without a copy in %s",
+             static_cast<long>(evo::kKeptLogMax / 1024), evo::contract::kServiceLogKeptOld);
+    }
     struct stat st;
-    if (fstat(1, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 16 * 1024 * 1024 && ftruncate(1, 0) == 0) {
+    if (trim == evo::KeptLogTrim::kNotKept && fstat(1, &st) == 0 && S_ISREG(st.st_mode) &&
+        st.st_size > 16 * 1024 * 1024 && ftruncate(1, 0) == 0) {
         ELOG("Supervisor", "log emptied (16 MB reached)");
     }
 }

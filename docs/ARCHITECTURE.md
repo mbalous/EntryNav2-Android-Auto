@@ -69,6 +69,7 @@ Le protocole Android Auto côté voiture, sans rien de propre à BMW.
 | `evo_gps` | Lecture passive du GPS de la voiture |
 | `evo_mic` | Micro de la voiture pour l'Assistant, lu sans blocage ; réouvert au plus une fois par seconde après un échec |
 | `evo_wlan`, `evo_ap` | Wi-Fi de la voiture, allumé comme le fait CarPlay |
+| `kept_log.hpp` | Journal du service gardé sur la partition de données en profil maintenance, borné à 512 Ko plus l'ancien |
 | `ap_uapsd.hpp` | Point d'accès de la voiture sans U-APSD pour le téléphone qui le rejoint (réglage en mémoire de hostapd, balise reconstruite seulement sans station connectée) |
 | `wifi_link` | Qualité de la liaison Wi-Fi avec le téléphone, lue dans le noyau pour les journaux, avec l'état du lien Bluetooth des BMW Apps (testé sur PC) |
 | `alps_spp`, `evo_spp_snapshot` | Pile Bluetooth de la voiture : commandes, et lecture de son état en mémoire |

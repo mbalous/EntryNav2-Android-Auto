@@ -71,13 +71,17 @@ touch /var/local/data/AA/maintenance
 
 | Journal | Emplacement | Taille |
 |---|---|---|
-| Appli de l'iDrive | `/var/local/data/AA/app.log`, et `app.old.log` après rotation | 512 Ko au plus |
-| Service Android Auto | `/tmp/entry-aa-service.log` | en mémoire, perdu au redémarrage |
+| Appli de l'iDrive | `/var/local/data/AA/app.log`, et `app.old.log` après rotation | 512 Ko au plus chacun |
+| Service Android Auto | `/var/local/data/AA/service.log`, et `service.old.log` ; `/tmp/entry-aa-service.log` est un lien vers lui | 512 Ko au plus chacun, gardé après le sommeil de la voiture |
+
+Le journal du service est sur la partition de données, comme celui de l'appli : le superviseur le surveille toutes les
+5 s, et au-delà de 512 Ko il le recopie dans `service.old.log` puis le vide. Si la partition refuse de l'ouvrir, il
+va en mémoire vive dans `/tmp/entry-aa-service.log`, comme avant (perdu au sommeil de la voiture).
 
 Depuis le PC :
 
 ```sh
-scp root@169.254.1.0:/var/local/data/AA/app.log root@169.254.1.0:/tmp/entry-aa-service.log .
+scp 'root@169.254.1.0:/var/local/data/AA/*.log' .
 ```
 
 ### Qualité du Wi-Fi
@@ -141,7 +145,7 @@ Journaux activés, le service écrit aussi une ligne `[Session]` toutes les 10 s
 Pour revenir à zéro journal :
 
 ```sh
-rm -f /var/local/data/AA/maintenance /var/local/data/AA/app.log /var/local/data/AA/app.old.log /tmp/entry-aa-service.log
+cd /var/local/data/AA && rm -f maintenance app.log app.old.log service.log service.old.log /tmp/entry-aa-service.log
 ```
 
 ## Garde-fou
