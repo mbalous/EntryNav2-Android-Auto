@@ -173,13 +173,13 @@ int main() {
         CHECK(frame(tr, 420, 100, 2, 72, ev) == 1 && ev[0].action == 2 && !phone.admit(ev[0], false));
         // Two fingers: the phone saw the first one go down, not the second one, which came after the picture left.
         aa::TouchContact two[2] = {{0, 2, 420, 100, 9}, {1, 1, 600, 300, 9}};
-        unsigned char f2[112];
-        aa::buildTouchFrame(f2, two, 2, 0, 84);
+        unsigned char f2[touch_fixture::kFrameBytes];
+        touch_fixture::buildTouchFrame(f2, two, 2, 84);
         CHECK(tr.feed(f2, sizeof(f2), ev, 16) == 1 && ev[0].action == 5 && !phone.admit(ev[0], false));
-        aa::buildTouchFrame(f2, two, 1, 0, 96);  // the second finger lifts
+        touch_fixture::buildTouchFrame(f2, two, 1, 96);  // the second finger lifts
         CHECK(tr.feed(f2, sizeof(f2), ev, 16) == 1 && ev[0].action == 6 && !phone.admit(ev[0], false));
         two[0].state = 3;  // then the first one
-        aa::buildTouchFrame(f2, two, 1, 0, 108);
+        touch_fixture::buildTouchFrame(f2, two, 1, 108);
         CHECK(tr.feed(f2, sizeof(f2), ev, 16) == 1 && ev[0].action == 1 && phone.admit(ev[0], false) && !phone.any());
     }
     // The same message split over three datagrams.
