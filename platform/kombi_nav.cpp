@@ -11,6 +11,7 @@
 #include <cstdio>
 
 #include "evo_log.hpp"
+#include "kombi_most.hpp"
 #include "service_contract.hpp"
 
 namespace evo {
@@ -75,6 +76,7 @@ Arrows::Arrows(const ArrowsConfig& config)
       retryAt_(0),
       linkFailures_(0),
       marked_(false),
+      most_(nullptr),
       bmwGuiding_(false),
       watching_(false) {
     pthread_mutex_init(&mu_, nullptr);
@@ -162,6 +164,9 @@ void Arrows::watchBmwGuidance() {
         pthread_mutex_lock(&watchMu_);
         bmwGuiding_ = state == 1;
         pthread_mutex_unlock(&watchMu_);
+        if (most_) {
+            most_->setBmwGuiding(state == 1);
+        }
         doze(kWatchEveryS, &Arrows::quitting, this);
     }
 }
@@ -299,6 +304,9 @@ void Arrows::tick(double now) {
     guide_.step(shown, now, why);
     if (guide_.showing()) {
         linkFailures_ = 0;
+        if (most_) {
+            most_->setEthernetSeen();  // a G-series KOMBI: the MOST cluster is left alone
+        }
     }
     if (guide_.stopped() == Guide::kStoppedRefused) {
         ELOG(kTag,

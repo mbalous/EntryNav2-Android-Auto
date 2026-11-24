@@ -34,7 +34,7 @@ CORE_SRC = core/aa_session.cpp core/aa_channels.cpp core/aa_messages.cpp core/ca
 CORE_OBJ = $(CORE_SRC:.cpp=.o)
 # The cluster guidance (platform/kombi_*), in the service and in its tests.
 KOMBI_SRC = platform/kombi_phone.cpp platform/kombi_display.cpp platform/kombi_someip.cpp platform/kombi_graph.cpp \
-            platform/kombi_client.cpp platform/kombi_guide.cpp platform/kombi_nav.cpp
+            platform/kombi_client.cpp platform/kombi_guide.cpp platform/kombi_nav.cpp platform/kombi_most.cpp
 KOMBI_OBJ = $(KOMBI_SRC:.cpp=.o)
 # Android Auto over a USB cable: the kernel's usbfs, the accessory switch, the bridge to the session, the loop.
 USB_SRC = platform/usb_devfs.cpp platform/usb_accessory.cpp platform/usb_bridge.cpp platform/usb_loop.cpp
@@ -48,7 +48,8 @@ DAEMON_SRC = platform/alps_spp.cpp platform/alps_spp_codec.cpp platform/evo_ap.c
 DAEMON_OBJ = $(CORE_OBJ) $(DAEMON_SRC:.cpp=.o)
 SUPERVISOR_OBJ = tools/aa_supervisor.o platform/evo_spp_snapshot.o platform/alps_spp.o platform/alps_spp_codec.o \
             platform/evo_ilm.o platform/evo_process.o platform/evo_ap.o platform/evo_ap_config.o platform/evo_wlan.o \
-            platform/vmost_client.o platform/usb_accessory.o platform/log_copy.o
+            platform/vmost_client.o platform/usb_accessory.o platform/log_copy.o platform/update_package.o \
+            platform/update_install.o platform/update_car.o
 CHECK_OBJ = tools/evo_check.o platform/alps_spp.o platform/alps_spp_codec.o platform/evo_process.o
 CAPTURE_OBJ = tools/evo_capture.o
 ARM_OBJ = $(sort $(DAEMON_OBJ) $(PLATFORM_OBJ) $(SUPERVISOR_OBJ) $(CHECK_OBJ) $(CAPTURE_OBJ))
@@ -65,15 +66,16 @@ VIDEO_LIBS = -l:libxsvideo.so.4 -l:libdrm_omap.so.1 -l:libdrm.so.2 -lpthread -lr
         tests/evo-check-host test-arm-all test-pb-arm-build test-sdr-arm-build test-kombi-arm-build \
         test-session-silence-arm-build test-presentation-arm-build test-wireless-lifecycle-arm-build \
         test-gps-arm-build test-supervisor-arm-build test-hmiapp-arm-build test-spawn-arm-build test-lm-cli-arm-build \
-        test-phone-arm-build test-usb-host test-usb-arm-build test-wifi-arm-build
+        test-phone-arm-build test-usb-host test-usb-arm-build test-wifi-arm-build test-update-arm-build
 all: daemon aa-supervisor hmiapp
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -MMD -MP -c $< -o $@
 
-# The service announces the project's version to the phone as the head unit's software version.
-platform/main.o: CPPFLAGS += -DENTRY_AAD_VERSION='"$(strip $(shell cat VERSION))"'
-platform/main.o: VERSION
+# The service announces the project's version to the phone as the head unit's software version; the supervisor
+# compares it with the version of an update.
+platform/main.o tools/aa_supervisor.o: CPPFLAGS += -DENTRY_AAD_VERSION='"$(strip $(shell cat VERSION))"'
+platform/main.o tools/aa_supervisor.o: VERSION
 
 daemon: entry-aad
 entry-aad: $(DAEMON_OBJ) $(PLATFORM_OBJ)
@@ -81,7 +83,7 @@ entry-aad: $(DAEMON_OBJ) $(PLATFORM_OBJ)
 	    -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -l:libdbus-1.so.3 -ldl
 
 aa-supervisor: $(SUPERVISOR_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDSHLIB) -l:libdbus-1.so.3 -lpthread -lrt -ldl
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDSHLIB) -l:libdbus-1.so.3 -l:libcrypto.so.1.0.0 -lpthread -lrt -ldl
 
 # iDrive PluginApp (installed in /opt/hmi/data/ro/Plugins/EntryAad, loaded by HmiMain3D at boot). Its objects are
 # position independent and hidden: HmiMain3D only looks up pluginAppInfo, the one symbol the library exports.
@@ -155,6 +157,8 @@ HOST_DBUS = $(shell pkg-config --cflags --libs dbus-1)
 # The session as the fake-phone test links it; the car's TLS 1.2 client method is deprecated in the PC's OpenSSL 3.
 SESSION_SRC = $(filter-out core/wireless_setup.cpp core/tcp_server.cpp,$(CORE_SRC))
 HOST_SSL_FLAGS = -Wno-deprecated-declarations
+# The update from a USB stick without its car side (update_car.cpp): what its tests link around a fake car.
+UPDATE_SRC = platform/update_install.cpp platform/update_package.cpp platform/log_copy.cpp
 # A BMW library read by one test: only on a PC holding a copy of the car system, never in git.
 SPP_FIXTURE_LIB = $(HOME)/entrynav2/rootfs/opt/app/usr/BTMedia/evolution/stack/lib/libevo_btappl.so
 
@@ -165,11 +169,12 @@ tests/evo-check-host:
 
 test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture-host test-usb-host \
            test-media-host test-frame-host test-session-host
+	python3 tests/test_make_db.py
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_elf.cpp -o tests/test-evo-elf
 	if [ -f "$(SPP_FIXTURE_LIB)" ]; then ENTRY_AAD_FIXTURE_LIB="$(SPP_FIXTURE_LIB)" ./tests/test-evo-elf; else ./tests/test-evo-elf; fi
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_spp_snapshot.cpp platform/evo_spp_snapshot.cpp -o tests/test-spp-snapshot
 	if [ -f "$(SPP_FIXTURE_LIB)" ]; then ENTRY_AAD_FIXTURE_LIB="$(SPP_FIXTURE_LIB)" ./tests/test-spp-snapshot; else echo "SKIP test-spp-snapshot: no copy of the car system"; fi
-	$(HOST_CXX) $(HOST_FLAGS) tests/test_supervisor.cpp platform/alps_spp_codec.cpp platform/usb_accessory.cpp \
+	$(HOST_CXX) $(HOST_FLAGS) -DENTRY_AAD_VERSION='"test"' tests/test_supervisor.cpp platform/alps_spp_codec.cpp platform/usb_accessory.cpp \
 	    platform/log_copy.cpp -o tests/test-supervisor
 	./tests/test-supervisor
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_ilm.cpp platform/evo_ilm.cpp platform/evo_process.cpp -o tests/test-evo-ilm
@@ -210,6 +215,15 @@ test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture
 	./tests/test-kept-log
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_log_copy.cpp platform/log_copy.cpp -o tests/test-log-copy
 	./tests/test-log-copy
+	$(HOST_CXX) $(HOST_FLAGS) $(HOST_SSL_FLAGS) tests/test_update_package.cpp platform/update_package.cpp -lcrypto \
+	    -o tests/test-update-package
+	./tests/test-update-package
+	python3 tests/test_update_release.py tests/test-update-package
+	$(HOST_CXX) $(HOST_FLAGS) $(HOST_SSL_FLAGS) tests/test_update_install.cpp $(UPDATE_SRC) -lcrypto \
+	    -o tests/test-update-install
+	./tests/test-update-install
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_update_flow.cpp -o tests/test-update-flow
+	./tests/test-update-flow
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_pb.cpp -o tests/test-pb
 	./tests/test-pb
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_volume_pill.cpp -o tests/test-volume-pill
@@ -274,6 +288,8 @@ test-kombi-host:
 	env -u XDG_RUNTIME_DIR dbus-run-session -- ./tests/test-bmw-guidance
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_kombi_golden.cpp $(KOMBI_SRC) -o tests/test-kombi-golden
 	./tests/test-kombi-golden
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_kombi_most.cpp $(KOMBI_SRC) -o tests/test-kombi-most
+	./tests/test-kombi-most
 
 # The USB cable: a fake bus (a folder like /sys/bus/usb/devices) and fake phones; no real device is opened.
 test-usb-host:
@@ -304,7 +320,15 @@ test-touch-live:
 test-arm-all: dev-tools test-pb-arm-build test-sdr-arm-build test-kombi-arm-build test-session-silence-arm-build test-media-arm-build \
               test-presentation-arm-build test-wireless-lifecycle-arm-build test-gps-arm-build test-supervisor-arm-build \
               test-hmiapp-arm-build test-spawn-arm-build test-lm-cli-arm-build test-phone-arm-build \
-              test-usb-arm-build test-wifi-arm-build
+              test-usb-arm-build test-wifi-arm-build test-update-arm-build
+
+# The update from a USB stick with the car's libcrypto (OpenSSL 1.0.1): signatures, the engine, the menu's button.
+test-update-arm-build:
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_update_package.cpp platform/update_package.cpp \
+	    -o tests/test-update-package-arm $(LDSHLIB) -l:libcrypto.so.1.0.0 -ldl -lrt
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_update_install.cpp $(UPDATE_SRC) \
+	    -o tests/test-update-install-arm $(LDSHLIB) -l:libcrypto.so.1.0.0 -ldl -lrt
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_update_flow.cpp -o tests/test-update-flow-arm $(LDSHLIB)
 
 test-pb-arm-build:
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_pb.cpp -o tests/test-pb-arm $(LDSHLIB) -lrt
@@ -326,7 +350,7 @@ test-gps-arm-build:
 test-supervisor-arm-build:
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_spp_snapshot.cpp platform/evo_spp_snapshot.cpp -o tests/test-spp-snapshot-arm $(LDSHLIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_evo_elf.cpp -o tests/test-evo-elf-arm $(LDSHLIB)
-	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_supervisor.cpp platform/alps_spp_codec.cpp platform/usb_accessory.cpp \
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -DENTRY_AAD_VERSION='"test"' tests/test_supervisor.cpp platform/alps_spp_codec.cpp platform/usb_accessory.cpp \
 	    platform/log_copy.cpp -o tests/test-supervisor-arm $(LDSHLIB) -lrt
 
 test-usb-arm-build: $(USB_OBJ) core/aa_frame.o
@@ -351,6 +375,7 @@ test-kombi-arm-build: $(KOMBI_OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_client.cpp $(KOMBI_OBJ) -o tests/test-kombi-client-arm $(LDSHLIB) -lpthread -lrt
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_nav.cpp $(KOMBI_OBJ) -o tests/test-kombi-nav-arm $(LDSHLIB) -lpthread -lrt
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_golden.cpp $(KOMBI_OBJ) -o tests/test-kombi-golden-arm $(LDSHLIB) -lpthread -lrt
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_most.cpp $(KOMBI_OBJ) -o tests/test-kombi-most-arm $(LDSHLIB) -lpthread -lrt
 
 test-sdr-arm-build:
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_sdr_g20.cpp core/sdr_builder.cpp platform/evo_sdr_sensors.cpp -o tests/test-sdr-g20-arm $(LDSHLIB)

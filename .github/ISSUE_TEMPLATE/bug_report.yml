@@ -10,8 +10,9 @@ body:
     id: version
     attributes:
       label: Project version
-      description: The release you installed, or the commit you built.
-      placeholder: 0.13.0-rc.9
+      description: The release you installed, or the commit you built. From 0.13.0-rc.10, the title of the Help page
+        in the Android Auto menu shows it.
+      placeholder: 0.13.0-rc.10
     validations:
       required: true
   - type: input

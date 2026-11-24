@@ -8,6 +8,70 @@ QEMU avec les bibliothèques de la voiture).
 
 ## [Non publié]
 
+### Ajouté
+
+- Traduction polonaise du menu Android Auto de l'iDrive, affichée quand l'iDrive est en polonais (au lieu de
+  l'anglais). Comme les autres langues, les textes restent en ASCII, sans lettres accentuées (« laczenie » pour
+  « łączenie ») ([#176](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/176), essayée sur une F44). Testé sur PC.
+- Traduction italienne du menu Android Auto de l'iDrive ([#77](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/77)). Testé sur PC.
+
+### Corrigé
+
+- Son : les demandes de focus audio du téléphone sont décodées comme des messages protobuf, même si leurs champs
+  arrivent dans un autre ordre ou si leur valeur occupe plusieurs octets ([#121](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/121)). Testé sur PC.
+- Image : une demande de focus de la voiture arrivée avant la mise en place de la vidéo est désormais envoyée dès que
+  la vidéo est prête, au lieu d'attendre un autre événement et de risquer d'écraser un état plus récent
+  ([#123](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/123)). Testé sur PC.
+- Sans-fil : au démarrage, quand la pile Bluetooth de la voiture répondait « occupée » (statut 4) au renouvellement
+  de l'annonce d'Android Auto, le service s'arrêtait et rendait le Bluetooth. Il attend maintenant le renouvellement
+  suivant ([#97](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/97), X1 F48, où la pile reste occupée près d'une minute au démarrage). Testé sur PC.
+
+## [0.13.0-rc.10] - 2026-11-24 · PC
+
+Version candidate : la mise à jour par clé USB, sans PC (archive signée par le projet, tout vérifié avant
+d'écrire, mise à jour coupée terminée à la suivante), et les flèches d'Android Auto sur le compteur des Série F par
+MOST. Cette version s'installe encore par SSH (étapes 1 à 3 de l'installation) ; les suivantes pourront s'installer
+par clé USB. Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
+
+### Ajouté
+
+- **Mise à jour par clé USB**, sans PC ni SSH : l'archive d'une version publiée, copiée telle quelle à la racine d'une
+  clé, puis *Mettre à jour par clé USB* dans le menu Android Auto. Un premier appui vérifie tout sans rien installer
+  (signature du projet, empreinte de chaque fichier, programmes faits pour cette unité, bibliothèques et fonctions
+  présentes sur la voiture) et dit ce qu'un second appui installe : version plus récente, plus ancienne, ou la même à
+  réinstaller. Le second appui, jamais pendant un appel ni en marche arrière, arrête Android Auto, prend exactement
+  l'archive vérifiée, écrit les nouveaux fichiers à côté des anciens, les relit, puis les met en place un par un par
+  renommage ; l'unité redémarre d'elle-même. Refusée sans rien changer, l'installation relance Android Auto. Une
+  coupure de courant pendant l'échange se termine à la mise à jour suivante, grâce à la liste gardée sur la partition
+  de données. Rapport dans `EntryAA-update.txt` sur la clé et dans les journaux copiés
+  ([installation](docs/INSTALLATION.md#par-clé-usb-sans-pc)). Les archives publiées portent désormais une liste
+  `UPDATE` signée par la clé du projet ; une archive fabriquée soi-même (`tools/package_release.py --unsigned`)
+  s'installe par SSH seulement. Cette version-ci s'installe encore par SSH, une fois ; les suivantes, par clé USB.
+  Testé sur PC et sous QEMU avec la glibc et la libcrypto de la voiture, pas encore en voiture.
+- Numéro de version dans le titre de la page *Aide* du menu Android Auto de l'iDrive (par exemple « Aide -
+  0.13.0-rc.10 ») : une photo de la page suffit pour savoir quelle version tourne dans la voiture. Ses six lignes
+  restent les mêmes. Testé sur PC.
+- Le téléphone voit la série de la voiture (« BMW G20 », « MINI F56 ») au lieu de « iDrive » quand le fichier `vehicle`
+  ne donne pas de modèle. L'appli de l'iDrive la lit dans le codage, au même endroit que CarPlay pour se présenter à un
+  iPhone, sans jamais lire le reste du bloc, où se trouve le numéro de série de la voiture
+  ([#15](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/15)). La ligne `model=` du fichier l'emporte
+  toujours. Testé sur PC.
+- Flèches d'Android Auto sur le compteur des Série F, par MOST : flèche, distance, unité et rue, dans les champs de
+  guidage que remplit la navigation BMW (bloc `HUD_Terminal`). Seulement sans compteur Ethernet (les Série G ne
+  changent pas), jamais pendant un guidage BMW, rien de créé sur le compteur. Un compteur qui répond plusieurs secondes
+  en retard après un démarrage à froid de l'iDrive est attendu (10 s par appel, huit appels d'avance), et la flèche
+  suit le guidage quand il passe à la tête haute
+  ([compatibilité](docs/COMPATIBILITE.md#flèches-sur-le-compteur-des-série-f),
+  [#79](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/79)). Testé sur PC seulement, d'après la description
+  d'un compteur 6WA (F52).
+
+### Corrigé
+
+- Réception Android Auto : la limite de taille d'un message est vérifiée sans risque de débordement sur ARM, séparément
+  pour chaque message. Un message trop grand est écarté et ses morceaux restants sont ignorés jusqu'à sa fin ; un
+  message entier ne perturbe pas les fragments en cours
+  ([#122](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/122)). Testé sur PC.
+
 ## [0.13.0-rc.9] - 2026-11-22 · PC
 
 Version candidate : des journaux sans PC (gardés après le sommeil de la voiture, copiés sur clé USB depuis le menu
@@ -102,9 +166,6 @@ Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
   arrivés incomplets, morceau illisible) n'était jamais accusé et gardait une de ces places pour de bon, et au dixième
   le flux s'arrêtait. Chaque message écarté est désormais accusé une fois, et le reste d'un message perdu en route est
   ignoré sans bruit jusqu'à son dernier morceau. Testé sur PC.
-- Réception Android Auto : la limite de taille d'un message est vérifiée sans risque de débordement sur ARM,
-  séparément pour chaque message. Un message trop grand est écarté et ses morceaux restants sont ignorés jusqu'à sa
-  fin ; un message entier ne perturbe pas les fragments en cours. Testé sur PC.
 - Image : si le décodeur vidéo de la voiture cessait de rendre ses tampons (après une erreur de décodage, son chien de
   garde ou un abandon), l'image d'Android Auto restait figée jusqu'à la fin de la séance, le téléphone continuant
   d'envoyer des images qui ne trouvaient plus de place. Quand aucun tampon n'est revenu depuis 3 s alors que l'image
@@ -595,7 +656,8 @@ Première version publique. Essayée sur une BMW G20 de 2019, logiciel iDrive `2
   encore suivie sur une voiture.
 - Voir les [limites connues](ROADMAP.md#limites-connues).
 
-[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.9...HEAD
+[Non publié]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.10...HEAD
+[0.13.0-rc.10]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.10
 [0.13.0-rc.9]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.9
 [0.13.0-rc.8]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.8
 [0.13.0-rc.7]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.7

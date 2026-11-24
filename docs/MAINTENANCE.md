@@ -30,14 +30,16 @@ Le service ne lit aucun réglage dans son environnement : ses valeurs sont fixes
 
 | Fichier | Effet |
 |---|---|
-| `vehicle` | La voiture annoncée au téléphone, une ligne par réglage : `model=…`, `year=…`, `side=left` ou `side=right` (côté du conducteur : Android Auto dispose son écran pour ce côté), `fuel=petrol` ou `fuel=diesel`. Sans ce fichier ou sans une ligne : « iDrive », 2019, essence, et le côté codé dans la voiture (conduite à gauche s'il est illisible) ; une ligne `side=` l'emporte sur le codage. La marque (BMW ou MINI) vient du codage de l'iDrive |
+| `vehicle` | La voiture annoncée au téléphone, une ligne par réglage : `model=…`, `year=…`, `side=left` ou `side=right` (côté du conducteur : Android Auto dispose son écran pour ce côté), `fuel=petrol` ou `fuel=diesel`. Sans ce fichier ou sans une ligne : la série codée dans la voiture (« G20 », « F56 » ; « iDrive » si le codage ne la dit pas), 2019, essence, et le côté codé dans la voiture (conduite à gauche s'il est illisible) ; une ligne `side=` l'emporte sur le codage. La marque (BMW ou MINI) vient du codage de l'iDrive |
 | `usb` | Présent : Android Auto par câble USB au lieu du sans-fil (case *Câble USB au lieu du sans-fil* du menu). Vide, ou le nom de la seule prise à surveiller : voir [USB](USB.md) |
 | `autostart` | Présent : Android Auto démarre avec l'iDrive (case *Démarrage automatique* du menu) |
 | `entry-direct` | Présent : la ligne *Android Auto* de l'iDrive ouvre directement Android Auto, au lieu de son menu |
-| `kombi-off` | Présent : rien n'est envoyé au compteur ni à la tête haute |
+| `kombi-off` | Présent : rien n'est envoyé au compteur ni à la tête haute (Ethernet des Série G ou MOST des Série F) |
 | `kombi-single-maneuver` | Présent au démarrage : graphe limité à la prochaine manœuvre, pour un compteur qui refuse le trajet complet (voir ci-dessous). Sans ce fichier : graphe historique |
 | `gps-telephone` | Présent : le téléphone garde son propre GPS, celui de la voiture n'est pas transmis |
 | `maintenance` | Présent : l'appli et le service gardent leurs journaux (case *Garder les journaux* du menu, voir [Journaux](#journaux)) |
+| `update-report.txt` | Écrit par la mise à jour par clé USB ([installation](INSTALLATION.md#par-clé-usb-sans-pc)) : ce que sa dernière vérification ou installation a trouvé et fait. Copié avec les journaux |
+| `update-pending` | Présent pendant les quelques secondes où une mise à jour par clé USB met ses fichiers en place, ou après une coupure à ce moment-là : la mise à jour suivante le lit pour terminer. Ne pas y toucher, sauf après une réinstallation par SSH, qui le rend inutile |
 
 Exemple, couper le guidage sur le compteur, puis le rétablir :
 
@@ -93,8 +95,9 @@ panne : activer les journaux, reproduire, les récupérer, puis les couper.
 3. Brancher une clé USB (FAT32, exFAT ou NTFS), puis choisir *Copier les journaux sur clé USB*. La ligne dit ce qui
    s'est passé : *Copie des journaux...*, puis *Journaux copiés sur la clé USB*, *Aucune clé USB trouvée*, *Aucun
    journal : cochez Garder* ou *Copie impossible* (clé pleine, protégée ou retirée). Les journaux sont dans le dossier
-   `EntryAA-logs/<date>` de la clé, avec la version du logiciel de l'unité et un `info.txt` qui les liste. Rien n'est
-   effacé ni changé sur l'unité.
+   `EntryAA-logs/<date>` de la clé, avec la version du logiciel de l'unité, le rapport de la dernière mise à jour par
+   clé USB s'il y en a eu une ([installation](INSTALLATION.md#par-clé-usb-sans-pc)) et un `info.txt` qui les liste.
+   Rien n'est effacé ni changé sur l'unité.
 4. Décocher *Garder les journaux*. Les journaux déjà écrits restent sur l'unité, pour une copie plus tard.
 
 Les journaux ne contiennent ni mot de passe ni adresse Wi-Fi ou Bluetooth ; ils peuvent contenir le nom Bluetooth du

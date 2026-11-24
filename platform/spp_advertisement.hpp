@@ -62,6 +62,12 @@ inline bool refreshAdvertisement(AlpsSppLink& bt, SppSnapshotReader& reader, uns
         if (bt.linkUp()) {
             return true;  // connection won the race, do not disturb it
         }
+        if (result == 4) {
+            // Status 4: the stack could not set up the SDP record or the RFCOMM server yet. Seen for about a minute
+            // after the start on an X1 F48, then gone (#72, #97): the next scheduled refresh tries again.
+            ELOG("Advertisement", "UUID refresh refused for now (status 4): trying again at the next refresh");
+            return true;
+        }
         ELOG("Advertisement", "UUID refresh not confirmed (%d): stopping so that Bluetooth is restored", result);
         return false;
     }

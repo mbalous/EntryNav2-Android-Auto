@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > This is a translation of the authoritative [French changelog](CHANGELOG.md), based on
-> [`v0.13.0-rc.9`](https://github.com/Jiraiya43/EntryNav2-Android-Auto/blob/v0.13.0-rc.9/CHANGELOG.md).
+> [`v0.13.0-rc.10`](https://github.com/Jiraiya43/EntryNav2-Android-Auto/blob/v0.13.0-rc.10/CHANGELOG.md).
 > It may become outdated; consult the French changelog for the source of truth.
 
 All notable changes to this project. Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -12,6 +12,69 @@ Each version states whether it was **tried in a car** or only **tested on a PC**
 QEMU with the car's libraries).
 
 ## [Unreleased]
+
+### Added
+
+- Polish translation of the Android Auto menu in iDrive, shown when iDrive is set to Polish (instead of English). As
+  in the other languages, the texts stay ASCII, without diacritics ("laczenie" for "łączenie")
+  ([#176](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/176), tried on an F44). Tested on PC.
+- Italian translation of the Android Auto menu in iDrive ([#77](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/77)). Tested on PC.
+
+### Fixed
+
+- Sound: the phone's audio focus requests are decoded as protobuf messages, even when their fields come in another
+  order or their value takes several bytes ([#121](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/121)). Tested on PC.
+- Picture: a focus request from the car that came before the video was set up is now sent as soon as the video is
+  ready, instead of waiting for another event and risking overwriting a newer state
+  ([#123](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/123)). Tested on PC.
+- Wireless: at start, when the car's Bluetooth stack answered "busy" (status 4) to the renewal of Android Auto's
+  advertisement, the service stopped and gave Bluetooth back. It now waits for the next renewal
+  ([#97](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/97), X1 F48, where the stack stays busy for about a minute at start). Tested on PC.
+
+## [0.13.0-rc.10] - 2026-11-24 · PC
+
+Release candidate: updates from a USB stick, without a PC (archive signed by the project, everything checked before
+anything is written, an interrupted update finished by the next one), and Android Auto's arrows on the cluster of
+F-series cars over MOST. This version itself still installs over SSH (installation steps 1 to 3); later ones can be
+installed from a USB stick. Tested on PC and under QEMU, **not yet tried in a car**.
+
+### Added
+
+- **Update from a USB stick**, with neither a PC nor SSH: the archive of a published version, copied as is to the root
+  of a stick, then *Mettre à jour par clé USB* (*Update from USB stick*) in the Android Auto menu. A first press checks
+  everything without installing anything (the project's signature, the hash of every file, programs built for this
+  unit, the libraries and functions they need present on the car) and says what a second press installs: a newer
+  version, an older one, or the same one again. The second press, never during a call or in reverse gear, stops
+  Android Auto, takes exactly the archive that was checked, writes the new files beside the old ones, reads them back,
+  then puts them in place one by one by renaming; the unit restarts by itself. Refused without any change, the
+  install starts Android Auto again. A power cut during the swap is finished by the next update, from the list kept on
+  the data partition. Report in `EntryAA-update.txt` on the stick and in the copied logs
+  ([installation](docs/INSTALLATION.md#par-clé-usb-sans-pc)). Published archives now hold an `UPDATE` list signed by
+  the project's key; an archive built by oneself (`tools/package_release.py --unsigned`) installs by SSH only. This
+  version itself still installs over SSH, once; later ones from a USB stick. Tested on PC and under QEMU with the
+  car's glibc and libcrypto, not yet in a car.
+- Version number in the title of the *Help* page of the Android Auto menu in iDrive (for example "Help -
+  0.13.0-rc.10"): a photo of the page is enough to know which version runs in the car. Its six lines stay the
+  same. Tested on PC.
+- The phone sees the car's series ("BMW G20", "MINI F56") instead of "iDrive" when the `vehicle` file gives no model.
+  The iDrive app reads it in the coding, where CarPlay reads it to introduce the car to an iPhone, never reading the
+  rest of that block, which holds the car's VIN ([#15](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/15)).
+  The file's `model=` line always wins. Tested on PC.
+- Android Auto's arrows on the cluster of F-series cars, over MOST: arrow, distance, unit and street, in the guidance
+  fields the BMW navigation fills (`HUD_Terminal` block). Only without an Ethernet cluster (G-series cars do not
+  change), never during BMW guidance, nothing created on the cluster. A cluster that answers seconds late after a cold
+  iDrive start is waited for (10 s per call, eight calls ahead), and the arrow follows the guidance when it moves to
+  the head-up display
+  ([compatibility](docs/COMPATIBILITE.md#flèches-sur-le-compteur-des-série-f),
+  [#79](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/79)). Tested on PC only, from the description of a
+  6WA cluster (F52).
+
+### Fixed
+
+- Android Auto reception: the size limit of a message is checked with no risk of overflow on ARM, separately for each
+  message. A message that is too large is dropped and its remaining fragments are ignored up to its end; a whole message
+  does not disturb the fragments in progress ([#122](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/122)).
+  Tested on PC.
 
 ## [0.13.0-rc.9] - 2026-11-22 · PC
 
@@ -578,7 +641,8 @@ First public release. Tried in a 2019 BMW G20, iDrive software `202111011321`.
   been followed in a car.
 - See the [known limitations](ROADMAP.md#limites-connues).
 
-[Unreleased]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.9...HEAD
+[Unreleased]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/compare/v0.13.0-rc.10...HEAD
+[0.13.0-rc.10]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.10
 [0.13.0-rc.9]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.9
 [0.13.0-rc.8]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.8
 [0.13.0-rc.7]: https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/tag/v0.13.0-rc.7

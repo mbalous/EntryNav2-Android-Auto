@@ -150,7 +150,8 @@ bool tuneVideoConfig(const pb::Field& config, Bytes& out, const DisplayPlan& dis
 
 SdrIdentity::SdrIdentity()
     : carMake("BMW"),
-      // No model name is stored on the head unit: "iDrive" until the vehicle file gives the car's own.
+      // No model name is stored on the head unit, only its series (car_series.hpp): "iDrive" until the coding or the
+      // vehicle file gives one.
       carModel("iDrive"),
       carYear("2019"),
       // The phone keeps its per-car settings under this id: never change it.
@@ -378,9 +379,12 @@ void setDiscoveryTrim(DiscoveryTrim trim) {
 
 std::vector<uint8_t> buildCarServiceDiscovery(const uint8_t* base, size_t baseLen, const char* vehicleFile,
                                               const char* softwareVersion, const DisplayPlan& display, const char* make,
-                                              DriverPosition codedSide) {
+                                              DriverPosition codedSide, const char* codedModel) {
     SdrIdentity identity;
-    identity.driverPosition = codedSide;  // before the file, whose "side=" wins
+    identity.driverPosition = codedSide;  // before the file, whose "side=" and "model=" win
+    if (codedModel && validCarModel(codedModel)) {
+        identity.carModel = codedModel;
+    }
     if (vehicleFile) {
         identity.loadVehicleFile(vehicleFile);
     }

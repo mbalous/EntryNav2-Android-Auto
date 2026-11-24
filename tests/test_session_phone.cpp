@@ -1194,12 +1194,16 @@ std::string stalledSend() {
             phone.send(14, kSealed, bytes({0x80, 0x04, 0x08, 0x00, 0x10, 0x01}));
             usleep(100000);
         }
+        // The session thread clears its running flag before it calls the ended callback: joined first, so that the
+        // callback has run (on a slow machine the flag can be read in between).
+        const bool active = session.isActive();
+        session.stop();
         const std::vector<std::string> events = takeEvents();
         bool endedCallback = false;
         for (size_t i = 0; i < events.size(); ++i) {
             endedCallback = endedCallback || events[i] == "ended";
         }
-        if (session.isActive()) {
+        if (active) {
             verdict = format("still running %lld ms after its send to the phone stalled", kEndWithinMs);
         } else if (!endedCallback || session.phoneSaidGoodbye()) {
             verdict = format("ended without its callback (%d) or as a goodbye (%d)", endedCallback ? 1 : 0,

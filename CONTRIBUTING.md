@@ -62,7 +62,7 @@ fermeture.
 | PC, comme la CI | `make check` | `g++`, `libssl-dev`, `libdbus-1-dev`, `protobuf-compiler`, `python3-protobuf`, clang-format 18.1.8 et ruff 0.6.9 (`pip install -r requirements-dev.txt`) |
 | PC, mémoire et UB | `make test-host-sanitizers` | `g++` avec ASan/UBSan, `libssl-dev` ; tests des trames et de la session, détection des fuites active |
 | ARM | `bash toolchain/tc.sh make -j4 all hmiapp test-arm-all` | Docker, la copie du système de la voiture |
-| ARM SDK, hors publication | `bash toolchain/tc.sh --sdk make -j4 all` puis `python3 tools/verify_sdk.py` | Images Docker `entrynav2-tc:4.7` et `entrynav2-sdk:4.7` ([README](README.fr.md#compiler)), `pyelftools`, `readelf` ; pas de copie du système |
+| ARM SDK, hors publication | `bash toolchain/tc.sh --sdk make -j4 all` puis `python3 tools/verify_sdk.py` | Images Docker `entrynav2-tc:4.7` et `entrynav2-sdk:4.7` ([README](README.md#building-from-source)), `pyelftools`, `readelf` ; pas de copie du système |
 | ARM sous QEMU | `python3 -I tests/run_qemu.py` | `qemu-user`, la copie du système |
 | Programmes validés | `make verify_binary verify_wireless` | idem |
 | Procédure d'installation | les commandes de [docs/INSTALLATION.md](docs/INSTALLATION.md), avec la BusyBox de la voiture sous QEMU | idem |
@@ -103,7 +103,9 @@ l'iDrive en français. Chaque fichier source commence par :
 
 1. `make check`, la compilation ARM, `tests/run_qemu.py`, `make verify_binary verify_wireless`.
 2. Mettre à jour `VERSION` et `CHANGELOG.md` (section de la version, date, « PC » ou « voiture »).
-3. `python3 tools/package_release.py` : `artifacts/entrynav2-android-auto-X.Y.Z-armhf.tar` et son `.sha256`.
+3. `python3 tools/package_release.py` : `artifacts/entrynav2-android-auto-X.Y.Z-armhf.tar` et son `.sha256`, sa liste
+   `UPDATE` signée par la clé du projet (`.secrets/update-signing-key.pem`, chez le mainteneur seulement) pour la mise
+   à jour par clé USB. Sans cette clé, `--unsigned` fabrique une archive qui s'installe par SSH seulement.
 4. Demande de fusion `chore(version): X.Y.Z`, puis étiquette `vX.Y.Z` sur `main` et publication sur GitHub, sous le
    titre « EntryNav2 (EntryEvo) Android Auto X.Y.Z », de l'archive et de son `.sha256`, avec l'extrait du CHANGELOG.
    Une version jamais essayée en voiture est marquée *pre-release*.

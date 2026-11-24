@@ -78,6 +78,9 @@ public:
     void setCarMake(const char* make) { carMake_ = make; }
     // The driver's side as the car is coded; the vehicle file's "side=" still wins. Left by default.
     void setCodedDriverSide(DriverPosition side) { codedSide_ = side; }
+    // The model as the car is coded (its series, "G20"); kept by the caller. The vehicle file's "model=" still wins.
+    // Null: "iDrive".
+    void setCodedModel(const char* model) { codedModel_ = model; }
 
     // Car input for the phone, from any thread: queued, then sent by the session thread.
     void postTouchEvent(const TouchEventOut& ev);
@@ -170,6 +173,7 @@ private:
     const char* softwareVersion_;
     const char* carMake_;
     DriverPosition codedSide_;
+    const char* codedModel_;
     DisplayPlan display_;
 
     CarInbox inbox_;

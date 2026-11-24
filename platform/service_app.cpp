@@ -424,6 +424,7 @@ void ServiceApp::micData(const uint8_t* pcm, size_t len, void* user) {
 void ServiceApp::navStatus(uint16_t msgId, const uint8_t* body, size_t len, void* user) {
     ServiceApp* a = static_cast<ServiceApp*>(user);
     evo::kombi::Arrows::onNavStatus(msgId, body, len, &a->kombi);
+    evo::kombi::MostHud::onNavStatus(msgId, body, len, &a->kombiMost);  // F-series cluster over MOST
 }
 
 void ServiceApp::ended(void* user) {
@@ -431,6 +432,7 @@ void ServiceApp::ended(void* user) {
     // No stop()/join here: this callback runs on the AA session thread.
     a->mic.request(false);
     a->kombi.onSessionEnded();
+    a->kombiMost.onSessionEnded();
     const bool goodbye = a->session.phoneSaidGoodbye();
     pthread_mutex_lock(&a->mu);
     a->focus = false;

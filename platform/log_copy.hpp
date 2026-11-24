@@ -24,8 +24,14 @@ enum class LogCopyResult : int {
     kWriteFailed = 5,    // the stick refused a folder or a file (full, write-protected, pulled out)
 };
 
-// The mount point of the first USB stick in mounts (/proc/mounts) under prefix, mounted read-write with a file system
-// the car mounts sticks with. Empty when there is none.
+// The USB sticks in mounts (/proc/mounts) under prefix, mounted with a file system the car mounts sticks with, in
+// their order there.
+struct StickMount {
+    std::string point;
+    bool writable;
+};
+std::vector<StickMount> usbStickMounts(const std::string& mounts, const std::string& prefix = "/media/");
+// The mount point of the first of them mounted read-write. Empty when there is none.
 std::string findUsbStick(const std::string& mounts, const std::string& prefix = "/media/");
 
 struct LogSource {
@@ -34,7 +40,8 @@ struct LogSource {
     bool log;          // a log, rather than the version: at least one must be found
 };
 // What the car has: the app's log and its old part, the service's kept log and its old part, the service's log in
-// /tmp when it is a file (the data partition refused it) rather than the link, /etc/version.
+// /tmp when it is a file (the data partition refused it) rather than the link, the report of the last update from a
+// USB stick (update_install.hpp), /etc/version.
 std::vector<LogSource> carLogSources();
 
 // Copies the sources found into <stick>/EntryAA-logs/<stamp> (another name if it exists), with info.txt: the stamp,

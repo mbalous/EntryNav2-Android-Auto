@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../platform/log_copy.hpp"
+#include "../platform/service_contract.hpp"
 
 namespace {
 
@@ -57,6 +58,13 @@ int main() {
     // The first stick wins.
     assert(evo::findUsbStick("/dev/sda1 /media/sda1 tfat ro 0 0\n/dev/sdb1 /media/sdb1 vfat rw 0 0\n") ==
            "/media/sdb1");
+    // Every stick, read-only ones too, for the update that only reads them.
+    const std::vector<evo::StickMount> sticks = evo::usbStickMounts(
+        "/dev/sda1 /media/sda1 tfat ro,noexec 0 0\n/dev/sdb1 /media/sdb1 texfat rw,noexec 0 0\n"
+        "/dev/sdc1 /mnt/sdc1 vfat rw 0 0\n/dev/sdd1 /media/sdd1 ext4 rw 0 0\n");
+    assert(sticks.size() == 2 && sticks[0].point == "/media/sda1" && !sticks[0].writable);
+    assert(sticks[1].point == "/media/sdb1" && sticks[1].writable);
+    assert(evo::usbStickMounts(car).size() == 1 && evo::usbStickMounts("").empty());
 
     char dir[] = "/tmp/entry-aad-log-copy-XXXXXX";
     assert(mkdtemp(dir));
@@ -99,10 +107,13 @@ int main() {
     // No such stick at all.
     assert(evo::copyLogs(base + "/gone", sources, "20261122-183300", folder) == evo::LogCopyResult::kWriteFailed);
 
-    // What the car offers: the logs, then the version, never anything else.
+    // What the car offers: the logs, the report of the last update from a USB stick, then the version, never anything
+    // else.
     const std::vector<evo::LogSource> carSources = evo::carLogSources();
-    assert(carSources.size() >= 5 && carSources.back().path == "/etc/version" && !carSources.back().log);
-    for (size_t i = 0; i + 1 < carSources.size(); ++i) {
+    assert(carSources.size() >= 6 && carSources.back().path == "/etc/version" && !carSources.back().log);
+    const evo::LogSource& report = carSources[carSources.size() - 2];
+    assert(report.path == evo::contract::kUpdateReport && report.name == "update-report.txt" && !report.log);
+    for (size_t i = 0; i + 2 < carSources.size(); ++i) {
         assert(carSources[i].log && carSources[i].path.find(".log") != std::string::npos);
     }
 

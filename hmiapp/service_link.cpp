@@ -34,6 +34,7 @@ namespace {
 // stayed "pressed again within 3 s" until the date caught up (#86).
 long g_lastLaunch = 0;
 pid_t g_launchPid = 0;
+bool g_holdStarts = false;  // an update from the USB stick needs Android Auto stopped (holdServiceStarts)
 pid_t g_stopPid = 0;
 long g_stopTime = 0;
 int g_stopStage = 0;
@@ -84,6 +85,10 @@ bool controlPortBusy() {
 // ---- launching the service ------------------------------------------------------------------------------------------
 void launchService() {
     const long now = monoSeconds();
+    if (g_holdStarts) {
+        alog("launch refused: an update from the USB stick is in progress");
+        return;
+    }
     if (g_lastLaunch && now - g_lastLaunch < 3) {
         alog("launch ignored (pressed again within 3 s)");
         return;
@@ -262,25 +267,21 @@ bool supervisorRunning() {
     return held;
 }
 
-// ---- the logs onto a USB stick --------------------------------------------------------------------------------------
+// ---- the supervisor's short jobs from the menu: the logs onto a USB stick, the update from one ----------------------
 namespace {
 pid_t g_copyPid = 0;
 long g_copyStart = 0;
-}  // namespace
+pid_t g_updatePid = 0;
+long g_updateStart = 0;
+bool g_updateInstall = false;
 
-bool logCopyRunning() {
-    return g_copyPid > 0;
-}
-
-bool startLogCopy() {
-    if (g_copyPid > 0) {
-        return false;
-    }
-    char* argv[] = {const_cast<char*>(contract::kSupervisor), const_cast<char*>("--copy-logs"), nullptr};
+// aa-supervisor <argument> in a child of its own, its output thrown away (it writes its own reports). 0 on failure.
+pid_t startJob(const char* argument, const char* what) {
+    char* argv[] = {const_cast<char*>(contract::kSupervisor), const_cast<char*>(argument), nullptr};
     const int null = open("/dev/null", O_RDWR | O_CLOEXEC);
     if (null < 0) {
-        alog("copy logs: cannot open /dev/null (errno %d)", errno);
-        return false;
+        alog("%s: cannot open /dev/null (errno %d)", what, errno);
+        return 0;
     }
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -297,37 +298,79 @@ bool startLogCopy() {
     posix_spawn_file_actions_destroy(&fa);
     close(null);
     if (rc != 0) {
-        alog("copy logs: %s --copy-logs not started (%s)", contract::kSupervisor, strerror(rc));
-        return false;
+        alog("%s: %s %s not started (%s)", what, contract::kSupervisor, argument, strerror(rc));
+        return 0;
     }
-    g_copyPid = pid;
-    g_copyStart = monoSeconds();
-    alog("copy logs: %s --copy-logs pid %d", contract::kSupervisor, static_cast<int>(pid));
-    return true;
+    alog("%s: %s %s pid %d", what, contract::kSupervisor, argument, static_cast<int>(pid));
+    return pid;
 }
 
-int logCopyEnded(long now) {
-    if (g_copyPid <= 0) {
+// -1 while the job runs, else its exit code, or -2 when it ended otherwise or was stopped after limit seconds
+// (limit 0: never stopped). *pid is 0 again once it has ended.
+int jobEnded(pid_t* pid, long started, long now, long limit, const char* what) {
+    if (*pid <= 0) {
         return -1;
     }
     int status = 0;
-    pid_t r = waitpid(g_copyPid, &status, WNOHANG);
-    if (r == 0 && now - g_copyStart >= kLogCopyLimitS) {
-        alog("copy logs: still running after %ld s, stopped", kLogCopyLimitS);
-        kill(g_copyPid, SIGKILL);
+    pid_t r = waitpid(*pid, &status, WNOHANG);
+    if (r == 0 && limit > 0 && now - started >= limit) {
+        alog("%s: still running after %ld s, stopped", what, limit);
+        kill(*pid, SIGKILL);
         do {
-            r = waitpid(g_copyPid, &status, 0);
+            r = waitpid(*pid, &status, 0);
         } while (r < 0 && errno == EINTR);
-        g_copyPid = 0;
+        *pid = 0;
         return -2;
     }
     if (r == 0 || (r < 0 && errno == EINTR)) {
         return -1;
     }
-    g_copyPid = 0;
+    *pid = 0;
     const int code = r > 0 && WIFEXITED(status) ? WEXITSTATUS(status) : -2;
-    alog("copy logs: ended, %d", code);
+    alog("%s: ended, %d", what, code);
     return code;
+}
+}  // namespace
+
+bool logCopyRunning() {
+    return g_copyPid > 0;
+}
+
+bool startLogCopy() {
+    if (g_copyPid > 0) {
+        return false;
+    }
+    g_copyPid = startJob("--copy-logs", "copy logs");
+    g_copyStart = monoSeconds();
+    return g_copyPid > 0;
+}
+
+int logCopyEnded(long now) {
+    return jobEnded(&g_copyPid, g_copyStart, now, kLogCopyLimitS, "copy logs");
+}
+
+bool startUpdate(bool install) {
+    if (g_updatePid > 0) {
+        return false;
+    }
+    g_updateInstall = install;
+    g_updatePid =
+        startJob(install ? "--update-install" : "--update-check", install ? "update install" : "update check");
+    g_updateStart = monoSeconds();
+    return g_updatePid > 0;
+}
+
+int updateEnded(long now) {
+    // An install is never stopped from here: halfway, it would leave the journal and part of the files to finish.
+    return jobEnded(&g_updatePid, g_updateStart, now, g_updateInstall ? 0 : kUpdateCheckLimitS,
+                    g_updateInstall ? "update install" : "update check");
+}
+
+void holdServiceStarts(bool hold) {
+    if (hold != g_holdStarts) {
+        alog("Android Auto starts %s", hold ? "held: an update from the USB stick needs it stopped" : "allowed again");
+        g_holdStarts = hold;
+    }
 }
 
 }  // namespace app

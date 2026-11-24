@@ -14,7 +14,8 @@
 namespace evo {
 namespace app {
 
-// Starts the supervisor, unless it is missing, still running, or was started less than 3 s ago.
+// Starts the supervisor, unless it is missing, still running, was started less than 3 s ago, or starts are held for an
+// update.
 void launchService();
 void sendToService(const char* message);
 // The state file when its process is alive; else "connecting" while the supervisor prepares, "running" when the
@@ -38,6 +39,16 @@ bool logCopyRunning();
 // was stopped after kLogCopyLimitS or ended otherwise.
 int logCopyEnded(long now);
 const long kLogCopyLimitS = 60;
+
+// The update from a USB stick (platform/update_install.hpp): `aa-supervisor --update-check` or `--update-install` in a
+// child process, one at a time. False when one runs or the start failed (logged).
+bool startUpdate(bool install);
+// Once per status poll: -1 while none ended since the last call, else its exit code (UpdateResult), or -2 when it
+// ended otherwise. A check still running after kUpdateCheckLimitS is stopped; an install never is.
+int updateEnded(long now);
+const long kUpdateCheckLimitS = 120;
+// While held, launchService refuses: Android Auto is being stopped for an install, or the install runs.
+void holdServiceStarts(bool hold);
 
 }  // namespace app
 }  // namespace evo

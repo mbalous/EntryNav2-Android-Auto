@@ -17,6 +17,7 @@ bool spareReadable = false;
 unsigned configuration = 0, uuidWrites = 0, configWrites = 0, disconnects = 0;
 unsigned transientReads = 0, readerOpens = 0, readerCloses = 0;
 bool failUuid = false, failConfig = false, videoGone = true, liveLink = false, failRead = false;
+int uuidStatus = 0;  // non-zero: the stack's answer to the next UUID writes (4: not ready yet, #97)
 bool flipKnown = true;
 // The phone of a lost session, as on the car: while our Android Auto UUID is on the slot, it reconnects kPhoneBackMs
 // after a disconnection, phoneReturns more times. lateWrites: results of the next UUID writes, which reach the stack
@@ -42,6 +43,9 @@ void phoneStep() {
 }
 }  // namespace
 namespace evo {
+int updateFromUsb(bool, const char*) {  // tests/test_update_install.cpp
+    return 0;
+}
 unsigned hotspotRequests = 0;
 bool requestWlanAccessPoint(unsigned, WlanRequestResult*) {
     ++hotspotRequests;
@@ -127,6 +131,9 @@ int AlpsSppLink::registerUuidPayload(const std::vector<uint8_t>& payload, int) {
     ++uuidWrites;
     if (failUuid) {
         return -1;
+    }
+    if (uuidStatus) {
+        return uuidStatus;
     }
     if (simulated.state == 2) {
         return 7;  // as the stack: a connected slot keeps its UUID
@@ -554,6 +561,14 @@ static void advertisementCases() {
     failUuid = true;
     assert(!evo::refreshAdvertisement(bt, reader, slot));
     failUuid = false;
+    // The stack not ready yet (status 4, an X1 F48 for a minute after the start): the next refresh tries again.
+    before = uuidWrites;
+    uuidStatus = 4;
+    assert(evo::refreshAdvertisement(bt, reader, slot) && uuidWrites == before + 1);
+    uuidStatus = 5;  // any other refusal still stops the service, which gives Bluetooth back
+    assert(!evo::refreshAdvertisement(bt, reader, slot));
+    uuidStatus = 0;
+    assert(evo::refreshAdvertisement(bt, reader, slot));
 }
 // --compat: a failed Bluetooth point stops wireless only (#106, F20 2017 over USB with an unknown Alps build).
 void compatBluetoothCases() {

@@ -24,6 +24,7 @@
 #include "evo_mic.hpp"
 #include "evo_pill.hpp"
 #include "evo_video.hpp"
+#include "kombi_most.hpp"
 #include "kombi_nav.hpp"
 #include "media_recall.hpp"
 #include "peek_timing.hpp"
@@ -106,8 +107,9 @@ public:
     AlpsSppLink bt;
     EvoVideo video;
     aa::AASession session;
-    EvoMic mic;                // car mic for the Assistant (stopped before the session it posts to)
-    evo::kombi::Arrows kombi;  // AA turn-by-turn -> HUD/cluster arrows, SOME/IP 0xB006 to the KOMBI
+    EvoMic mic;                     // car mic for the Assistant (stopped before the session it posts to)
+    evo::kombi::MostHud kombiMost;  // F-series cluster over MOST, on the controller reader (destroyed after kombi)
+    evo::kombi::Arrows kombi;       // AA turn-by-turn -> HUD/cluster arrows, SOME/IP 0xB006 to the KOMBI
     aa::TcpServer server;
     aa::ApInfo ap;
     EvoVideoConfig videoConfig;

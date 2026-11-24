@@ -3,7 +3,8 @@
 // Android Auto supervisor, started by the iDrive app (hmiapp/) with --service: prepares Bluetooth and Wi-Fi, runs
 // entry-aad, gives Bluetooth back on exit. With the USB setting file, Bluetooth and Wi-Fi are left as they are.
 // --compat rehearses a start for the compatibility check, --recover finishes a restore left unconfirmed. Never restarts
-// BMW services, never edits firmware.
+// BMW services, never edits firmware. The iDrive menu also runs it to copy the logs onto a USB stick (--copy-logs) and
+// to update Android Auto from one (--update-check, --update-install: platform/update_install.hpp).
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <libgen.h>
@@ -40,6 +41,7 @@
 #include "log_copy.hpp"
 #include "service_contract.hpp"
 #include "spp_baseline.hpp"
+#include "update_install.hpp"
 #include "usb_accessory.hpp"
 #include "vmost_client.hpp"
 
@@ -593,16 +595,23 @@ int main(int argc, char** argv) {
     if (argc == 2 && !strcmp(argv[1], "--copy-logs")) {
         return evo::copyLogsToUsb();
     }
+    if (argc == 2 && (!strcmp(argv[1], "--update-check") || !strcmp(argv[1], "--update-install"))) {
+        return evo::updateFromUsb(!strcmp(argv[1], "--update-install"), ENTRY_AAD_VERSION);
+    }
     if (argc != 2 || (!strcmp(argv[1], "--help"))) {
         puts(
-            "Usage: aa-supervisor --service | --compat | --recover | --copy-logs\n"
+            "Usage: aa-supervisor --service | --compat | --recover | --copy-logs | --update-check | --update-install\n"
             "  --service  started by the iDrive app: wireless Android Auto with no time limit, stopped by the app or\n"
             "             STOP; the BMW hotspot switched on as Apple CarPlay does when it is off. With the file\n"
             "             /var/local/data/AA/usb: Android Auto over a USB cable, Bluetooth and Wi-Fi untouched\n"
             "  --compat   what a start would find on this car, changing nothing\n"
             "  --recover  gives Bluetooth back after an unconfirmed stop (journal in the current folder)\n"
             "  --copy-logs  the app's and the service's logs onto the USB stick (exit 0 copied, 3 no stick, 4 no log,\n"
-            "             5 write failed)");
+            "             5 write failed)\n"
+            "  --update-check    what an update from the USB stick would do, changing nothing (report in\n"
+            "             /var/local/data/AA/update-report.txt; exit codes: platform/update_install.hpp)\n"
+            "  --update-install  installs the update signed by the project from the USB stick, then restarts the\n"
+            "             unit (Android Auto must be stopped)");
         return argc == 2 ? 0 : 2;
     }
     const bool service = !strcmp(argv[1], "--service"), restore = !strcmp(argv[1], "--recover");

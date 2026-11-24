@@ -9,7 +9,9 @@
 #include <string>
 #include <vector>
 
+#include "evo_log.hpp"
 #include "kombi_fake_kombi.hpp"
+#include "kombi_most.hpp"
 #include "kombi_nav.hpp"
 #include "kombi_test_util.hpp"
 
@@ -214,6 +216,53 @@ void offUntilNextSession() {
     CHECK(k.count() == 1 + 6 + 97 + 6);
 }
 
+// The MOST cluster's side of the arrows: what reaches vmostd.
+class CountingPort : public evo::VmostPort {
+public:
+    CountingPort() : sent(0) {}
+    int send(evo::VmostMsgOut&) override {
+        ++sent;
+        return 0;
+    }
+    int shadow(uint8_t, uint8_t, bool) override { return 0; }
+    void pump(int) override {}
+    int sent;
+};
+
+// Ticks the MOST cluster's calls for about a second, as the controller reader would.
+int mostCalls(MostHud& most) {
+    CountingPort port;
+    for (int i = 0; i < 100; ++i) {
+        most.tick(evo::monoMs(), port);
+        usleep(10000);
+    }
+    return port.sent;
+}
+
+// The Ethernet KOMBI tells the MOST cluster it took an arrow: on a G-series car the MOST cluster stays alone, even with
+// the phone guiding.
+void mostAloneWithEthernet() {
+    FakeKombi k;
+    Place p;
+    MostHudConfig mc;
+    mc.markerFile = std::string(p.dir) + "/kombi-most.shown";
+    mc.offFile = p.off;
+    mc.ethernetFirstS = 0;
+    MostHud most(mc);
+    Arrows arrows(p.config(k.port()));
+    arrows.attachMost(&most);
+    arrows.start();
+    tell(arrows, Step(7, "TEST ST"), 800, "0.5", kUnitMilesTenths);
+    CHECK(k.waitFor(97));
+    const Bytes status = kombitest::status(1), state = kombitest::state(Step(7, "TEST ST")),
+                position = kombitest::position(800, "0.5", kUnitMilesTenths);
+    MostHud::onNavStatus(kNavStatus, &status[0], status.size(), &most);
+    MostHud::onNavStatus(kNavState, &state[0], state.size(), &most);
+    MostHud::onNavStatus(kNavPosition, &position[0], position.size(), &most);
+    CHECK(mostCalls(most) == 0 && most.phase() == MostHud::kIdle);
+    arrows.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -221,8 +270,9 @@ int main() {
     endToEnd();
     bmwNavigationWins();
     offUntilNextSession();
+    mostAloneWithEthernet();
     puts(
         "PASS kombi nav: route mode and log, menu setting, session end, exit, marker of a killed run, BMW navigation, "
-        "refusal");
+        "refusal, MOST cluster left alone by an Ethernet KOMBI");
     return 0;
 }

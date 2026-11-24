@@ -10,6 +10,7 @@
 #include <string>
 
 #include "../platform/car_brand.hpp"
+#include "../platform/car_series.hpp"
 #include "../platform/controller_layout.hpp"
 #include "../platform/driver_side.hpp"
 #include "../platform/service_contract.hpp"
@@ -173,6 +174,28 @@ bool writeDriverSide(const VariantServer& server) {
     return written;
 }
 
+// Every series is asked: exactly one set, and not "unknown", is written; anything else says nothing sure.
+bool writeSeries(const VariantServer& server) {
+    const char* series = nullptr;
+    unsigned set = 0;
+    for (size_t i = 0; i < aa::kSeriesVariantCount; ++i) {
+        if (server.isSet(aa::kSeriesVariants[i].id)) {
+            series = aa::kSeriesVariants[i].series;
+            ++set;
+        }
+    }
+    const bool unknown = server.isSet(aa::kVariantSeriesUnknown);
+    if (set != 1 || unknown) {
+        unlink(contract::kSeriesFile);
+        alog("series: coding unclear (%u series set%s): the vehicle file's model, or iDrive", set,
+             unknown ? ", unknown set" : "");
+        return false;
+    }
+    const bool written = writeLine(contract::kSeriesFile, series);
+    alog("series: %s%s", series, written ? "" : ", not written");
+    return written;
+}
+
 }  // namespace
 
 bool writeIdriveCoding() {
@@ -181,12 +204,14 @@ bool writeIdriveCoding() {
         unlink(contract::kControllerFile);
         unlink(contract::kBrandFile);
         unlink(contract::kDriverSideFile);
+        unlink(contract::kSeriesFile);
         return false;
     }
     const bool keys = writeControllerCoding(server);
     const bool brand = writeBrand(server);
     const bool side = writeDriverSide(server);
-    return keys && brand && side;
+    const bool series = writeSeries(server);
+    return keys && brand && side && series;
 }
 
 DriveModePopup readDriveModePopup() {

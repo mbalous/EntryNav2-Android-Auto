@@ -4,7 +4,8 @@
 """Build the iDrive app's text and image databases.
 
 EntryAad_ALL_Texts.zip holds <lang>.txt ("id=text" lines, same format as BMW's PluginsCoded apps) and
-EntryAad_ALL_Images.zip holds <imageId>.png, from hmiapp/res. Both are reproducible: same input, same bytes.
+EntryAad_ALL_Images.zip holds <imageId>.png, from hmiapp/res. Both are reproducible: same input, same bytes. The Help
+page's title carries the project's version (VERSION), so a photo of it tells which version a car runs.
 
 Usage: make_db.py <res dir> <output dir> [--live-data]
 """
@@ -26,6 +27,7 @@ LANGS = {
     "it": "Italiano",
     "pt": "Portugues",
     "ru": "Russian",
+    "pl": "Polski",
 }
 TEXTS = {
     1: "Android Auto",
@@ -44,6 +46,25 @@ TEXTS = {
     43: "No USB stick found",
     44: "No logs: tick Keep logs",
     45: "Copy failed",
+    46: "Update from USB stick",
+    47: "Reading the USB stick...",
+    48: "Install the update",
+    49: "Install the older version",
+    50: "Reinstall this version",
+    51: "Finish the update",
+    52: "Already up to date",
+    53: "No update on the USB stick",
+    54: "Update not valid",
+    55: "Update not for this car",
+    56: "Stopping Android Auto...",
+    57: "Installing: keep ignition on",
+    58: "Installed: iDrive restarting",
+    59: "Installed: restart the iDrive",
+    60: "Update failed: nothing changed",
+    61: "Incomplete: install it again",
+    62: "Busy: try again shortly",
+    63: "Installation not recognised",
+    64: "Not during a call or in reverse",
     20: "NAV, MAP: Android Auto navigation",
     21: "MEDIA: Android Auto media",
     22: "COM: Android Auto phone",
@@ -69,6 +90,25 @@ LANG_TEXTS = {  # ASCII only
         43: "Aucune cle USB trouvee",
         44: "Aucun journal : cochez Garder",
         45: "Copie impossible",
+        46: "Mettre a jour par cle USB",
+        47: "Lecture de la cle USB...",
+        48: "Installer la mise a jour",
+        49: "Installer la version anterieure",
+        50: "Reinstaller cette version",
+        51: "Terminer la mise a jour",
+        52: "Deja a jour",
+        53: "Aucune mise a jour sur la cle",
+        54: "Mise a jour non valide",
+        55: "Mise a jour incompatible",
+        56: "Arret d'Android Auto...",
+        57: "Installation, laisser le contact",
+        58: "Installee : redemarrage iDrive",
+        59: "Installee : redemarrer l'iDrive",
+        60: "Echec : rien n'a ete modifie",
+        61: "Incomplete : la reinstaller",
+        62: "Occupe : reessayer plus tard",
+        63: "Installation non reconnue",
+        64: "Pas pendant un appel ni en marche AR",
         20: "NAV, MAP : navigation Android Auto",
         21: "MEDIA : musique Android Auto",
         22: "COM : telephone Android Auto",
@@ -92,12 +132,70 @@ LANG_TEXTS = {  # ASCII only
         43: "Kein USB-Stick gefunden",
         44: "Keine Protokolle: Speichern an",
         45: "Kopieren fehlgeschlagen",
+        46: "Update vom USB-Stick",
+        47: "USB-Stick wird gelesen...",
+        48: "Update installieren",
+        49: "Aeltere Version installieren",
+        50: "Version neu installieren",
+        51: "Update abschliessen",
+        52: "Bereits aktuell",
+        53: "Kein Update auf dem USB-Stick",
+        54: "Update ungueltig",
+        55: "Update passt nicht zum Auto",
+        56: "Android Auto wird beendet...",
+        57: "Installation: Zuendung anlassen",
+        58: "Installiert: iDrive startet neu",
+        59: "Installiert: iDrive neu starten",
+        60: "Fehler: nichts geaendert",
+        61: "Unvollstaendig: neu installieren",
+        62: "Belegt: spaeter erneut",
+        63: "Installation nicht erkannt",
+        64: "Nicht bei Anruf oder Rueckwaerts",
         20: "NAV, MAP: Android Auto Navigation",
         21: "MEDIA: Android Auto Medien",
         22: "COM: Android Auto Telefon",
         23: "MENU: iDrive - BACK: zurueck",
         24: "Telefon gekoppelt, Ton per Bluetooth",
         26: "Kostenlos: github.com/Jiraiya43",
+    },
+    "it": {
+        2: "Android Auto: Connessione...",
+        10: "Avvia Android Auto",
+        11: "Arresta Android Auto",
+        13: "Connessione al telefono...",
+        14: "Apri Android Auto",
+        15: "Avvio automatico",
+        16: "Aiuto",
+        17: "Cavo USB anziche wireless",
+        20: "NAV, MAP: navigazione Android Auto",
+        21: "MEDIA: musica Android Auto",
+        22: "COM: telefono Android Auto",
+        23: "MENU: iDrive - BACK: indietro",
+        24: "Telefono abbinato, audio Bluetooth",
+        26: "Gratuito: github.com/Jiraiya43",
+    },
+    "pl": {
+        2: "Android Auto: laczenie...",
+        10: "Uruchom Android Auto",
+        11: "Zatrzymaj Android Auto",
+        13: "Laczenie z telefonem...",
+        14: "Otworz Android Auto",
+        15: "Automatyczne uruchamianie",
+        16: "Pomoc",
+        17: "Kabel USB zamiast WiFi",
+        18: "Zachowaj logi",
+        40: "Kopiuj logi na USB",
+        41: "Kopiowanie logow...",
+        42: "Logi skopiowane na USB",
+        43: "Nie znaleziono pamieci USB",
+        44: "Brak logow: zaznacz Zachowaj logi",
+        45: "Kopiowanie nieudane",
+        20: "NAV, MAP: nawigacja Android Auto",
+        21: "MEDIA: muzyka Android Auto",
+        22: "COM: telefon Android Auto",
+        23: "MENU: iDrive - BACK: wstecz",
+        24: "Telefon sparowany, dzwiek przez BT",
+        26: "Darmowe: github.com/Jiraiya43",
     },
 }
 LANG_TEXTS["fr-CA"] = LANG_TEXTS["fr-FR"]
@@ -112,7 +210,9 @@ LIVE_DATA_LANG_TEXTS = {
     },
 }
 LIVE_DATA_LANG_TEXTS["fr-CA"] = LIVE_DATA_LANG_TEXTS["fr-FR"]
+HELP_TITLE = 27  # "<Help> - <version>": title of the Help page (its six lines are full, the page does not scroll)
 FIXED_DATE = (2026, 11, 2, 0, 0, 0)  # the same date in every archive: reproducible files
+VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
 
 
 def add(archive, name, data):
@@ -122,11 +222,21 @@ def add(archive, name, data):
     archive.writestr(info, data)
 
 
-def write_texts(path, defaults=TEXTS, translations=LANG_TEXTS):
+def project_version():
+    """The project's version, as VERSION gives it: one line of ASCII letters, digits, dots and dashes."""
+    version = VERSION_FILE.read_text().strip()
+    if not version or not all(c.isascii() and (c.isalnum() or c in ".-") for c in version):
+        raise SystemExit(f"FAIL: {VERSION_FILE} does not hold a version: {version!r}")
+    return version
+
+
+def write_texts(path, defaults=TEXTS, translations=LANG_TEXTS, version=None):
     """One <lang>.txt per language: English, overridden by the language's own texts."""
     with zipfile.ZipFile(path, "w") as archive:
         for lang, langname in LANGS.items():
             texts = defaults | translations.get(lang, {})
+            if version is not None:
+                texts[HELP_TITLE] = f"{texts[16]} - {version}"
             body = f"100000={langname}\n" + "".join(f"{key}={value}\n" for key, value in sorted(texts.items()))
             if not body.isascii():
                 raise SystemExit(f"FAIL: {lang} texts must stay ASCII")
@@ -168,7 +278,7 @@ def main():
         write_texts(out / "EntryLiveData_ALL_Texts.zip", LIVE_DATA_TEXTS, LIVE_DATA_LANG_TEXTS)
         print("wrote EntryLiveData_ALL_Texts.zip in", out)
         return
-    write_texts(out / "EntryAad_ALL_Texts.zip")
+    write_texts(out / "EntryAad_ALL_Texts.zip", version=project_version())
     write_images(out / "EntryAad_ALL_Images.zip", res)
     print("wrote EntryAad_ALL_Texts.zip, EntryAad_ALL_Images.zip in", out)
 

@@ -13,6 +13,7 @@
       <raAction id="26"/>
       <raAction id="27"/>
       <raAction id="28"/>
+      <raAction id="29"/>
       <hmiAction id="25" target="12"/>
     </actions>
     <models>
@@ -44,6 +45,9 @@
       <textIdModel id="42" textId="40">
         <synonyms/>
       </textIdModel>
+      <textIdModel id="43" textId="46">
+        <synonyms/>
+      </textIdModel>
       <textIdModel id="35" textId="15">
         <synonyms/>
       </textIdModel>
@@ -68,6 +72,9 @@
       <textIdModel id="86" textId="26">
         <synonyms/>
       </textIdModel>
+      <textIdModel id="87" textId="27">
+        <synonyms/>
+      </textIdModel>
       <raIntModel id="40" modelType="NativeStateID" value="1"/>
     </models>
     <events>
@@ -86,11 +93,12 @@
           <checkbox action="26" id="68" model="38" text="Cable USB au lieu du sans-fil" textModel="39"/>
           <checkbox action="27" id="69" model="33" text="Garder les journaux" textModel="41"/>
           <button action="28" id="63" model="42" text="Copier les journaux sur cle USB"/>
+          <button action="29" id="60" model="43" text="Mettre a jour par cle USB"/>
           <separator id="67"/>
           <button action="25" id="65" model="36" text="Aide"/>
         </components>
       </hmiState>
-      <hmiState id="12" parentId="10" text="Aide" textModel="36">
+      <hmiState id="12" parentId="10" text="Aide" textModel="87">
         <components>
           <label id="99" model="86"/>
           <label id="90" model="80"/>

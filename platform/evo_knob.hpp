@@ -18,6 +18,9 @@
 // bit the steering wheel phone button's read had set) never answers those reads, and its C10/C20 status messages
 // stayed filtered out. When CCS35up stays silent, the same plain read is sent for C10 and C20 on E5.01
 // (aa::CcsProtocol, evo_ccs.hpp); a car that answers on CCS35up is sent nothing more.
+//
+// The connection is lent to one other user, the F-series cluster's guidance fields (kombi_most.hpp, VmostPeer): its
+// messages go to it, it ticks on this thread, and it says when it has a call to send, so the wait may be shorter.
 #ifndef ENTRY_AAD_PLATFORM_EVO_KNOB_HPP
 #define ENTRY_AAD_PLATFORM_EVO_KNOB_HPP
 
@@ -78,7 +81,7 @@ bool decodeVolumeLevel(const VmostMsgView& m, VolumeLevel& out);
 const uint16_t kAudioButtonFkt = 0xC04;
 int decodeAudioButton(const VmostMsgView& m);
 
-class EvoKnob {
+class EvoKnob : private VmostPort {
 public:
     using Callback = void (*)(const aa::CcsEvent&, void*);
     EvoKnob();
@@ -86,6 +89,8 @@ public:
     bool start(InputMode mode, Callback cb, void* user);
     // The car's coding, read by the iDrive app (controller_layout.hpp): which key each button is. Before start().
     void setCoding(const aa::ControllerCoding& coding);
+    // The other user of the connection (the cluster's MOST guidance fields). Before start().
+    void setPeer(VmostPeer* peer) { peer_ = peer; }
     void setOwned(bool owned);  // keys are forwarded only while the Android Auto picture shows
     using VolumeCallback = void (*)(unsigned int, void*);
     void setVolumeCallback(VolumeCallback cb, void* user) {
@@ -143,6 +148,11 @@ public:
     aa::CcsProtocol::Kind protocol() const { return protocol_.kind(); }
 
 private:
+    // VmostPort, for the peer
+    int send(VmostMsgOut& m) override;
+    int shadow(uint8_t fblock, uint8_t inst, bool on) override;
+    void pump(int ms) override;
+
     static void* threadMain(void* self);
     void run();
     bool load();
@@ -156,6 +166,8 @@ private:
     std::atomic<bool> running_, owned_;
     VmostClient vmost_;
     bool connected_;
+    int fd_;
+    VmostPeer* peer_;
     unsigned gets_;
     uint8_t registered_[4];
     int nRegistered_;

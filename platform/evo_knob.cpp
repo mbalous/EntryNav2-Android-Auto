@@ -114,6 +114,8 @@ EvoKnob::EvoKnob()
       running_(false),
       owned_(false),
       connected_(false),
+      fd_(-1),
+      peer_(nullptr),
       gets_(0),
       nRegistered_(0),
       nVolRegistered_(0),
@@ -314,6 +316,10 @@ void EvoKnob::observeMedia(const VmostMsgView& m) {
 
 void EvoKnob::onMessage(const VmostMsgView& m) {
     ++messages_;
+    if (peer_ && peer_->wants(m)) {
+        peer_->onMessage(m);
+        return;
+    }
     if (m.fblock == kAudioMasterFblock) {  // volume level (copy of what the AudioMaster tells HmiMain3D)
         VolumeLevel level;
         if (decodeVolumeLevel(m, level)) {
@@ -472,6 +478,39 @@ void EvoKnob::readOlderProtocol() {
     }
 }
 
+int EvoKnob::send(VmostMsgOut& m) {
+    return vmost_.send(&m);
+}
+
+int EvoKnob::shadow(uint8_t fblock, uint8_t inst, bool on) {
+    return on ? vmost_.shadowRegister(fblock, inst) : vmost_.shadowDeregister(fblock, inst);
+}
+
+// Only while the reader closes (VmostPeer::finish): the answers to the last calls.
+void EvoKnob::pump(int ms) {
+    const uint32_t until = monoMs() + static_cast<uint32_t>(ms > 0 ? ms : 0);
+    for (;;) {
+        const int32_t left = static_cast<int32_t>(until - monoMs());
+        if (left <= 0 || fd_ < 0) {
+            return;
+        }
+        struct pollfd p;
+        p.fd = fd_;
+        p.events = POLLIN;
+        p.revents = 0;
+        const int r = poll(&p, 1, left);
+        if (r <= 0 || (p.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+            if (r < 0 && errno == EINTR) {
+                continue;
+            }
+            return;
+        }
+        if (vmost_.processMessages() != 0) {
+            return;
+        }
+    }
+}
+
 void EvoKnob::run() {
     int rc = vmost_.connect(vmostCallback, this, 0);
     if (rc != 0) {
@@ -547,12 +586,18 @@ void EvoKnob::run() {
                  kAudioMasterInstance, kVolumeLevelFkt, levelRegistered_ ? "OK" : "refused", lr,
                  gr == 0 ? "sent" : "not sent", gr);
         }
+        fd_ = fd;
         while (running_) {
             struct pollfd p;
             p.fd = fd;
             p.events = POLLIN;
             p.revents = 0;
-            int r = poll(&p, 1, 100);
+            int wait = 100;
+            if (peer_) {
+                const int due = peer_->dueInMs(monoMs());
+                wait = due < wait ? due : wait;
+            }
+            int r = poll(&p, 1, wait);
             if (r < 0 && errno != EINTR) {
                 ELOG("Knob", "poll: %s", strerror(errno));
                 break;
@@ -575,7 +620,14 @@ void EvoKnob::run() {
             if (protocol_.olderDue(monoMs())) {
                 readOlderProtocol();
             }
+            if (peer_) {
+                peer_->tick(monoMs(), *this);
+            }
         }
+        if (peer_ && connected_) {
+            peer_->finish(*this);
+        }
+        fd_ = -1;
     }
     releaseHeldKeys("controller reading stopped");
     if (connected_) {

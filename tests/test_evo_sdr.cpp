@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "car_brand.hpp"
+#include "car_series.hpp"
 #include "dhu_sdp.h"
 #include "driver_side.hpp"
 #include "evo_gps.hpp"
@@ -391,6 +392,59 @@ int main() {
     for (std::map<uint64_t, std::vector<uint8_t>>::iterator it = reference.begin(); it != reference.end(); ++it) {
         CHECK(other.count(it->first) && (it->first == 6 || it->first == 7 || other[it->first] == it->second));
     }
+    // The series coded in the car (car_series.hpp): the model told to the phone, unless the vehicle file says
+    // "model=". The table: distinct ids and names, every name valid in the series file and as a model.
+    char series[6] = {0};
+    for (size_t i = 0; i < aa::kSeriesVariantCount; ++i) {
+        CHECK(aa::kSeriesVariants[i].id != aa::kVariantSeriesUnknown);
+        CHECK(aa::parseCarSeries(aa::kSeriesVariants[i].series, series) &&
+              !strcmp(series, aa::kSeriesVariants[i].series) && aa::validCarModel(series));
+        for (size_t k = i + 1; k < aa::kSeriesVariantCount; ++k) {
+            CHECK(aa::kSeriesVariants[i].id != aa::kSeriesVariants[k].id &&
+                  strcmp(aa::kSeriesVariants[i].series, aa::kSeriesVariants[k].series) != 0);
+        }
+    }
+    const char* g20 = nullptr;
+    const char* f48 = nullptr;
+    const char* f56 = nullptr;
+    for (size_t i = 0; i < aa::kSeriesVariantCount; ++i) {
+        g20 = aa::kSeriesVariants[i].id == 0xDC3 ? aa::kSeriesVariants[i].series : g20;
+        f48 = aa::kSeriesVariants[i].id == 0x55A ? aa::kSeriesVariants[i].series : f48;
+        f56 = aa::kSeriesVariants[i].id == 0x55E ? aa::kSeriesVariants[i].series : f56;
+    }
+    CHECK(aa::kSeriesVariantCount == 90 && g20 && !strcmp(g20, "G20") && f48 && !strcmp(f48, "F48") && f56 &&
+          !strcmp(f56, "F56"));
+    CHECK(aa::parseCarSeries("G20\n", series) && !strcmp(series, "G20") && aa::parseCarSeries("RR31\r\n", series));
+    CHECK(!aa::parseCarSeries("g20", series) && !aa::parseCarSeries("G", series) &&
+          !aa::parseCarSeries("G20 xDrive", series) && !aa::parseCarSeries("", series) &&
+          !aa::parseCarSeries(nullptr, series) && !strcmp(series, "RR31"));
+    const std::vector<uint8_t> codedG20 = aa::buildCarServiceDiscovery(
+        kDhuSdpProtobuf, kDhuSdpProtobufLen, nullptr, nullptr, same, nullptr, aa::DriverPosition::kLeft, "G20");
+    const std::string g20Text(codedG20.begin(), codedG20.end());
+    CHECK(g20Text.find("G20") != std::string::npos && g20Text.find("iDrive") == std::string::npos);
+    const std::string unversionedText(unversioned.begin(), unversioned.end());
+    size_t idrives = 0, g20s = 0;
+    for (size_t at = unversionedText.find("iDrive"); at != std::string::npos;
+         at = unversionedText.find("iDrive", at + 1)) {
+        ++idrives;
+    }
+    for (size_t at = g20Text.find("G20"); at != std::string::npos; at = g20Text.find("G20", at + 1)) {
+        ++g20s;
+    }
+    CHECK(idrives > 0 && g20s == idrives && codedG20.size() == unversioned.size() - 3 * idrives);
+    f = fopen(vehicle, "w");
+    CHECK(f);
+    fputs("model=320d\n", f);
+    fclose(f);
+    const std::vector<uint8_t> fileModel = aa::buildCarServiceDiscovery(
+        kDhuSdpProtobuf, kDhuSdpProtobufLen, vehicle, nullptr, same, nullptr, aa::DriverPosition::kLeft, "G20");
+    unlink(vehicle);
+    const std::string fileText(fileModel.begin(), fileModel.end());
+    CHECK(fileText.find("320d") != std::string::npos && fileText.find("G20") == std::string::npos);
+    CHECK(aa::buildCarServiceDiscovery(kDhuSdpProtobuf, kDhuSdpProtobufLen, nullptr, nullptr, same, nullptr,
+                                       aa::DriverPosition::kLeft, "G2;0") == unversioned);
+    CHECK(aa::buildCarServiceDiscovery(kDhuSdpProtobuf, kDhuSdpProtobufLen, nullptr, nullptr, same, nullptr,
+                                       aa::DriverPosition::kLeft, nullptr) == unversioned);
     puts(
         "PASS capteurs AA : modele DHU reduit a NIGHT_MODE + DRIVING_STATUS (le telephone garde son GPS), canal 9 "
         "toujours retire par le coeur, autres canaux identiques, fichier voiture (modele, annee, cote, carburant), "

@@ -81,7 +81,8 @@ bool copyFile(int in, const std::string& to, off_t* size) {
 
 }  // namespace
 
-std::string findUsbStick(const std::string& mounts, const std::string& prefix) {
+std::vector<StickMount> usbStickMounts(const std::string& mounts, const std::string& prefix) {
+    std::vector<StickMount> sticks;
     std::istringstream lines(mounts);
     std::string line;
     while (std::getline(lines, line)) {
@@ -90,10 +91,19 @@ std::string findUsbStick(const std::string& mounts, const std::string& prefix) {
         if (!(fields >> device >> point >> type >> options)) {
             continue;
         }
-        const bool writable = options == "rw" || options.compare(0, 3, "rw,") == 0;
-        if (point.size() > prefix.size() && point.compare(0, prefix.size(), prefix) == 0 && stickFileSystem(type) &&
-            writable) {
-            return point;
+        if (point.size() > prefix.size() && point.compare(0, prefix.size(), prefix) == 0 && stickFileSystem(type)) {
+            const StickMount stick = {point, options == "rw" || options.compare(0, 3, "rw,") == 0};
+            sticks.push_back(stick);
+        }
+    }
+    return sticks;
+}
+
+std::string findUsbStick(const std::string& mounts, const std::string& prefix) {
+    const std::vector<StickMount> sticks = usbStickMounts(mounts, prefix);
+    for (size_t i = 0; i < sticks.size(); ++i) {
+        if (sticks[i].writable) {
+            return sticks[i].point;
         }
     }
     return std::string();
@@ -109,6 +119,7 @@ std::vector<LogSource> carLogSources() {
     if (lstat(contract::kServiceLog, &ram) == 0 && S_ISREG(ram.st_mode)) {
         sources.push_back({contract::kServiceLog, "service-tmp.log", true});
     }
+    sources.push_back({contract::kUpdateReport, "update-report.txt", false});
     sources.push_back({"/etc/version", "head-unit-version.txt", false});
     return sources;
 }

@@ -206,33 +206,49 @@ static void frameGapRule() {
     assert(frames.arrive(12) == 0);
 }
 
-// The hold runs in postVideoFrame over Wi-Fi only; its counts reach the caller.
+// The hold runs in postVideoFrame over Wi-Fi only; its counts reach the caller. In real time: frames posted back to
+// back reach postVideoFrame within kFrameGapMs of each other only when this machine is not busy elsewhere, so each case
+// gets a few tries (FrameGap's own timings are checked above with a clock of its own). What holds whatever the timing
+// is checked on every try.
 static void framesSpread(evo::EvoVideo& video, evo::EvoVideoConfig cfg) {
     typedef evo::FrameFate Fate;
-    cfg.holdCloseFrames = true;
-    assert(video.init(cfg) && video.start());
-    long long since = nowMs();
-    assert(video.postVideoFrame(kIdr, sizeof(kIdr), 0) == Fate::kDecoding);
-    assert(video.postVideoFrame(kSlice, sizeof(kSlice), 0) == Fate::kDecoding);  // held
-    const long long pair = nowMs() - since;
-    since = nowMs();
-    // Queued behind the held frame: it arrives a gap after it, and would not be held anyway.
-    assert(video.postVideoFrame(kSlice, sizeof(kSlice), 0) == Fate::kDecoding);
-    const long long afterHeld = nowMs() - since;
-    assert(pair >= evo::kFrameGapMs - 5 && afterHeld < 15);
-    evo::FrameGapStats seen = video.takeFrameGaps();
-    assert(seen.frames == 3 && seen.early == 1 && seen.held == 1 && seen.longestHoldMs >= evo::kFrameGapMs - 5);
-    video.stop();
+    const int kTries = 5;
+    bool spread = false;
+    for (int i = 0; i < kTries && !spread; ++i) {
+        cfg.holdCloseFrames = true;
+        assert(video.init(cfg) && video.start());
+        long long since = nowMs();
+        assert(video.postVideoFrame(kIdr, sizeof(kIdr), 0) == Fate::kDecoding);
+        assert(video.postVideoFrame(kSlice, sizeof(kSlice), 0) == Fate::kDecoding);  // held
+        const long long pair = nowMs() - since;
+        since = nowMs();
+        // Queued behind the held frame: it arrives a gap after it, and would not be held anyway.
+        assert(video.postVideoFrame(kSlice, sizeof(kSlice), 0) == Fate::kDecoding);
+        const long long afterHeld = nowMs() - since;
+        const evo::FrameGapStats seen = video.takeFrameGaps();
+        video.stop();
+        // Whatever the timing: three frames, never two holds in a row, only an early frame held, and its hold waited.
+        assert(seen.frames == 3 && seen.held <= 1 && seen.held <= seen.early);
+        assert(seen.held == 0 || pair + afterHeld + 1 >= static_cast<long long>(seen.longestHoldMs));
+        spread = pair >= evo::kFrameGapMs - 5 && afterHeld < 15 && seen.early == 1 && seen.held == 1 &&
+                 seen.longestHoldMs >= evo::kFrameGapMs - 5;
+    }
+    assert(spread);
     // Over the cable: at once, only counted.
-    cfg.holdCloseFrames = false;
-    assert(video.init(cfg) && video.start());
-    since = nowMs();
-    assert(video.postVideoFrame(kIdr, sizeof(kIdr), 0) == Fate::kDecoding);
-    assert(video.postVideoFrame(kSlice, sizeof(kSlice), 0) == Fate::kDecoding);
-    assert(nowMs() - since < 15);
-    seen = video.takeFrameGaps();
-    assert(seen.frames == 2 && seen.early == 1 && seen.held == 0);
-    video.stop();
+    bool counted = false;
+    for (int i = 0; i < kTries && !counted; ++i) {
+        cfg.holdCloseFrames = false;
+        assert(video.init(cfg) && video.start());
+        const long long since = nowMs();
+        assert(video.postVideoFrame(kIdr, sizeof(kIdr), 0) == Fate::kDecoding);
+        assert(video.postVideoFrame(kSlice, sizeof(kSlice), 0) == Fate::kDecoding);
+        const long long took = nowMs() - since;
+        const evo::FrameGapStats seen = video.takeFrameGaps();
+        video.stop();
+        assert(seen.frames == 2 && seen.held == 0);  // never held over the cable, whatever the timing
+        counted = took < 15 && seen.early == 1;
+    }
+    assert(counted);
 }
 
 int main() {

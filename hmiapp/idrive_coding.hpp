@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Jiraiya43
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // What the service needs of the car's coding, read inside iDrive and written for it: which key each controller
-// button is (platform/controller_layout.hpp), the brand (platform/car_brand.hpp) and the driver's side
-// (platform/driver_side.hpp).
+// button is (platform/controller_layout.hpp), the brand (platform/car_brand.hpp), the driver's side
+// (platform/driver_side.hpp) and the series (platform/car_series.hpp).
 //
 // iDrive keeps its coding behind a variant server: hmiplugin::get<IHmiVariantServer>(), then isVariantSet(id)
 // (vtable slot 3) and getRole() (slot 21), as CHmiCCSController::pushbuttonToKeycode does in HmiMain3D. The app runs
@@ -15,8 +15,8 @@
 namespace evo {
 namespace app {
 
-// Reads the coding and writes contract::kControllerFile, contract::kBrandFile and contract::kDriverSideFile. False
-// when one was not written (logged); a file not written is removed.
+// Reads the coding and writes contract::kControllerFile, contract::kBrandFile, contract::kDriverSideFile and
+// contract::kSeriesFile. False when one was not written (logged); a file not written is removed.
 bool writeIdriveCoding();
 
 // iDrive's own driving mode popup, read for the app itself (popup_peek.hpp, driveModePopupExpected).

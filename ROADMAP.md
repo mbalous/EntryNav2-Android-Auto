@@ -35,6 +35,8 @@ Un point n'est coché qu'avec une preuve en voiture : un test sur PC ne suffit p
   ([#17](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/17))
 - [ ] Première installation sur une autre voiture, puis désinstallation vérifiée
 - [ ] Tableau des logiciels essayés rempli ([compatibilité](docs/COMPATIBILITE.md))
+- [ ] Mise à jour par clé USB essayée sur la voiture de référence : version plus récente, version antérieure, clé
+  sans archive, archive non signée ([installation](docs/INSTALLATION.md#par-clé-usb-sans-pc))
 - [x] Ancienne molette (contrôleurs C10/C20) essayée sur une vraie voiture : i3
   ([#19](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/19), 11 novembre 2026)
 
