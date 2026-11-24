@@ -25,6 +25,23 @@ class SdkContractTest(unittest.TestCase):
     def test_valid_contract(self):
         self.check()
 
+    def test_supervisor_requires_crypto_for_updates(self):
+        needed = {
+            "ld-linux-armhf.so.3",
+            "libc.so.6",
+            "libcrypto.so.1.0.0",
+            "libdbus-1.so.3",
+            "libdl.so.2",
+            "libgcc_s.so.1",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libstdc++.so.6",
+        }
+        check_contract("aa-supervisor", needed, (), set(), set(), {})
+        needed.remove("libcrypto.so.1.0.0")
+        with self.assertRaisesRegex(SystemExit, "DT_NEEDED"):
+            check_contract("aa-supervisor", needed, (), set(), set(), {})
+
     def test_rejects_unexpected_dependency(self):
         self.needed.add("libunexpected.so")
         with self.assertRaisesRegex(SystemExit, "DT_NEEDED"):
