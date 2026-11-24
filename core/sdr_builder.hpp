@@ -75,7 +75,7 @@ std::vector<uint8_t> buildCarServiceDiscovery(const uint8_t* base, size_t baseLe
                                               const char* softwareVersion, const DisplayPlan& display = DisplayPlan(),
                                               const char* make = nullptr,
                                               DriverPosition codedSide = DriverPosition::kLeft,
-                                              const char* codedModel = nullptr);
+                                              const char* codedModel = nullptr, bool directAudio = false);
 
 }  // namespace aa
 

@@ -262,6 +262,13 @@ void onMic(bool open, void*) {
 void onNav(uint16_t id, const uint8_t* body, size_t len, void*) {
     event(format("nav %04x ", id) + (len ? hex(body, len) : std::string("-")));
 }
+void onAudioData(uint8_t channel, uint32_t session, const uint8_t* pcm, size_t len, uint64_t pts, void*) {
+    event(format("audio data ch=%u session=%u pts=%llu ", channel, session, static_cast<unsigned long long>(pts)) +
+          hex(pcm, len));
+}
+void onAudioStream(uint8_t channel, uint32_t session, uint32_t config, bool started, void*) {
+    event(format("audio stream ch=%u session=%u config=%u start=%d", channel, session, config, started ? 1 : 0));
+}
 
 // The golden was recorded on an M340i of 2019: the model and year come from a vehicle file, as on that car.
 char g_vehicleFile[96];
@@ -596,13 +603,17 @@ private:
 struct Link {
     aa::AASession session;
     int phoneFd;
-    explicit Link(bool touch = true) : phoneFd(-1) {
+    explicit Link(bool touch = true, bool audio = false) : phoneFd(-1) {
         int fds[2];
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
             fprintf(stderr, "FAIL socketpair\n");
             exit(1);
         }
         watch(session, touch);
+        if (audio && !session.setAudioCallbacks(onAudioData, onAudioStream)) {
+            fprintf(stderr, "FAIL audio callbacks\n");
+            exit(1);
+        }
         phoneFd = fds[1];
         if (!session.start(fds[0])) {
             fprintf(stderr, "FAIL session start\n");
@@ -1120,6 +1131,112 @@ std::string audioFocusProtobuf() {
     phone.leave();
     if (!waitEnded(link.session)) {
         return "session did not end cleanly";
+    }
+    return std::string();
+}
+
+std::string directAudioSession() {
+    std::vector<std::string> log;
+    Link link(true, true);
+    Phone phone(link.phoneFd, log);
+    phone.handshake();
+    phone.discover();
+    takeEvents();
+    phone.send(8, kSealed, bytes({0x80, 0x01, 0x08, 0x07, 0x10, 0x01}));
+    phone.send(8, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 3, 0x11, 0x22}));
+    phone.send(8, kSealed, bytes({0x80, 0x01, 0x08, 0x09}));
+    phone.send(9, kSealed, bytes({0x80, 0x01, 0x08, 0x0b}));
+    phone.send(9, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 4, 1, 2, 3, 4}));
+    phone.send(9, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 5, 1, 2, 3}));
+    phone.send(8, kSealed, bytes({0x80, 0x02}));
+    phone.send(8, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 6, 1, 2}));
+    phone.settle();
+    phone.headUnitPings(30, false);
+    const std::vector<std::string> events = takeEvents();
+    const std::vector<std::string> expected = {
+        "audio stream ch=8 session=7 config=1 start=1",  "audio data ch=8 session=7 pts=3 1122",
+        "audio stream ch=8 session=7 config=1 start=0",  "audio stream ch=8 session=9 config=0 start=1",
+        "audio stream ch=9 session=11 config=0 start=1", "audio data ch=9 session=11 pts=4 01020304",
+        "audio stream ch=8 session=9 config=0 start=0",
+    };
+    if (events != expected) {
+        return "unexpected audio start/data/stop callbacks";
+    }
+    if (std::find(log.begin(), log.end(), "hu ch=9 fl=0b 8004 080b1001") == log.end()) {
+        return "media ack did not retain the stream session id";
+    }
+    phone.leave();
+    if (!waitEnded(link.session)) {
+        return "session did not end";
+    }
+    link.session.stop();
+    const std::vector<std::string> endEvents = takeEvents();
+    if (std::find(endEvents.begin(), endEvents.end(), "audio stream ch=9 session=11 config=0 start=0") ==
+        endEvents.end()) {
+        return "active audio was not stopped on disconnect";
+    }
+    return std::string();
+}
+
+std::string pacedAudioAcks() {
+    std::vector<std::string> log;
+    Link link(true, true);
+    Phone phone(link.phoneFd, log);
+    phone.handshake();
+    phone.discover();
+    phone.send(9, kSealed, bytes({0x80, 0x01, 0x08, 0x05}));
+    Bytes pcm(57600, 0);  // 300 ms of stereo 48 kHz S16LE
+    phone.send(9, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 1}) + pcm);
+    phone.settle();
+    const std::string ack = "hu ch=9 fl=0b 8004 08051001";
+    if (std::find(log.begin(), log.end(), ack) != log.end()) {
+        return "music was acknowledged before its playback duration";
+    }
+    phone.headUnitPings(450, false);
+    if (std::count(log.begin(), log.end(), ack) != 1) {
+        return "paced music ack was not sent";
+    }
+    phone.send(9, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 2}) + pcm);
+    phone.send(9, kSealed, bytes({0x80, 0x02}));
+    phone.settle();
+    if (std::count(log.begin(), log.end(), ack) != 2) {
+        return "STOP did not flush the pending ack with its original session id";
+    }
+    phone.leave();
+    if (!waitEnded(link.session)) {
+        return "session did not end";
+    }
+    return std::string();
+}
+
+std::string invalidAudioStart() {
+    const Bytes invalid[] = {
+        bytes({0x80, 0x01, 0x08, 0x01, 0x10, 0x02}),  // unknown speech configuration
+        bytes({0x80, 0x01, 0x08, 0x01, 0x10, 0x80}),  // truncated protobuf
+        bytes({0x80, 0x01, 0x08, 0x01, 0x12, 0x00}),  // configuration has wrong wire type
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        std::vector<std::string> log;
+        Link link(true, true);
+        Phone phone(link.phoneFd, log);
+        phone.handshake();
+        phone.discover();
+        takeEvents();
+        phone.send(8, kSealed, invalid[i]);
+        phone.untilClosed();
+        if (!waitEnded(link.session)) {
+            return "invalid START did not end session";
+        }
+        if (!link.session.audioFailed()) {
+            return "invalid START did not report an audio failure";
+        }
+        link.session.stop();
+        const std::vector<std::string> events = takeEvents();
+        for (size_t j = 0; j < events.size(); ++j) {
+            if (events[j].find("audio ") == 0) {
+                return "invalid START reached the playback callback";
+            }
+        }
     }
     return std::string();
 }
@@ -1818,6 +1935,12 @@ int main(int argc, char** argv) {
     }
     const std::string audioFocus = writing ? std::string() : audioFocusProtobuf();
     takeEvents();
+    const std::string directAudio = writing ? std::string() : directAudioSession();
+    takeEvents();
+    const std::string pacedAudio = writing ? std::string() : pacedAudioAcks();
+    takeEvents();
+    const std::string invalidAudio = writing ? std::string() : invalidAudioStart();
+    takeEvents();
     const std::string quiet = writing ? std::string() : quietPhone();
     takeEvents();
     const std::string broken = writing ? std::string() : brokenStream();
@@ -1878,6 +2001,21 @@ int main(int argc, char** argv) {
         return 1;
     }
     puts("PASS session, audio focus protobuf: decodes field 1 across field order and varint width");
+    if (!directAudio.empty()) {
+        printf("FAIL session, direct audio: %s\n", directAudio.c_str());
+        return 1;
+    }
+    puts("PASS session, direct audio: stream lifecycle, PCM, acks and disconnect");
+    if (!pacedAudio.empty()) {
+        printf("FAIL session, paced audio: %s\n", pacedAudio.c_str());
+        return 1;
+    }
+    puts("PASS session, paced audio: time-based acks and STOP flush");
+    if (!invalidAudio.empty()) {
+        printf("FAIL session, invalid audio start: %s\n", invalidAudio.c_str());
+        return 1;
+    }
+    puts("PASS session, invalid audio start: unsupported or malformed stream ends safely");
     if (!quiet.empty()) {
         printf("FAIL session, quiet phone: %s\n", quiet.c_str());
         return 1;

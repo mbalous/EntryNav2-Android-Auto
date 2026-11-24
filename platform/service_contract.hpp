@@ -33,6 +33,8 @@ constexpr char kKombiMostLayout[] = "/var/local/data/AA/kombi-most-layout";
 constexpr char kKombiSingle[] = "/var/local/data/AA/kombi-single-maneuver";
 // Present: Android Auto over a USB cable instead of wireless. Empty, or the one USB port to use ("1-1").
 constexpr char kUsb[] = "/var/local/data/AA/usb";
+// Present: USB projection keeps the existing Bluetooth audio path.
+constexpr char kUsbBluetoothAudio[] = "/var/local/data/AA/usb-bluetooth-audio";
 constexpr char kAppLog[] = "/var/local/data/AA/app.log";
 constexpr char kAppLogOld[] = "/var/local/data/AA/app.old.log";
 // The service's log in the maintenance profile, kept across the car's sleep (kept_log.hpp).

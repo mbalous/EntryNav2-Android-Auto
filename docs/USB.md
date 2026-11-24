@@ -4,8 +4,23 @@
 faire d'Android Auto sans fil, ou quand le Wi-Fi de la voiture rame. L'état des essais est dans le
 [journal des versions](../CHANGELOG.md).
 
-Avec le câble, l'image, les commandes, le micro, le GPS et le guidage passent par l'USB. **Le son reste sur le
-Bluetooth de la voiture**, comme en sans fil : le téléphone doit donc rester appairé à la voiture.
+Avec le câble, l'image, les commandes, le micro, le GPS et le guidage passent par l'USB. Le service essaie aussi le
+son direct par USB (musique et annonces), sans modifier les appels ni le micro. Il utilise les sorties
+`entertainment` et `carplay_alt` et les routes audio observées sur un autre EntryNav2.
+
+**Le son direct n'a pas encore été vérifié en voiture sur cette version.** Si les sorties ou la lecture de la table
+des routes ne sont pas disponibles, le service conserve le son Bluetooth. En cas d'erreur pendant une session directe,
+il la relance en Bluetooth et conserve ce choix jusqu'à l'arrêt du service. Le service ne vérifie pas si le téléphone
+est connecté en Bluetooth : vérifier la connexion média en cas de repli. Si la libération de la route audio ne peut pas
+être confirmée, une nouvelle session est refusée plutôt que de risquer un conflit avec le son de la voiture.
+
+Pour forcer le Bluetooth dès le départ, Android Auto arrêté, créer `/var/local/data/AA/usb-bluetooth-audio` ; retirer
+ce fichier pour réessayer le son direct au prochain démarrage. Le sans-fil garde son comportement Bluetooth actuel.
+
+L'outil de développement `evo-check --audio-routes` lit la table des connexions audio sans construire ni supprimer de
+route ; `evo-check --context` relève notamment la configuration ALSA et la version du système. Ces relevés ne prouvent
+pas qu'une route soit utilisable. Le contexte contient aussi des informations réseau : les retirer avant de partager
+sa sortie.
 
 ## Choisir le câble ou le sans-fil
 
@@ -70,5 +85,5 @@ case du menu retire le fichier, nom de prise compris : il est à réécrire ensu
 |---|---|
 | Rien ne se passe au branchement | Câble de données et non de charge seule. Sur le téléphone, choisir « Transfert de fichiers » dans la notification USB, puis rebrancher. |
 | Le téléphone affiche Android Auto mais pas l'iDrive | Débrancher, attendre 10 secondes, rebrancher. |
-| Pas de son | Le son passe par le Bluetooth : vérifier que le téléphone est connecté à la voiture. |
+| Pas de son | Forcer le Bluetooth avec `usb-bluetooth-audio`, redémarrer Android Auto et vérifier que le téléphone est connecté à la voiture en média. |
 | Toujours rien | Activer les journaux ([maintenance](MAINTENANCE.md)), reproduire, et joindre le journal du service à un ticket : les lignes `[UsbLoop]` et `[UsbBridge]` disent ce qui a été vu sur les prises. |

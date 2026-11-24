@@ -333,6 +333,8 @@ int main(int argc, char** argv) {
              display.leftInset());
     }
     evo::ServiceApp app(kAaPort, video, &quit);
+    evo::VmostPeerPair mostPeers(app.audioRoute, app.kombiMost);
+    app.audioRoute.enable(usb && access(evo::contract::kUsbBluetoothAudio, F_OK) != 0);
     app.videoConfig.setDisplay(display.canvasWidth, display.canvasHeight, display.width, display.height,
                                display.shownWidth, display.shownHeight);
     app.videoConfig.holdCloseFrames = !usb;  // pairs come from the Wi-Fi's bursts, not the cable
@@ -353,7 +355,7 @@ int main(int argc, char** argv) {
     evo::EvoControl control;
     const bool logsKept = access(evo::contract::kMaintenance, F_OK) == 0;
     if (usb) {
-        ELOG("Main", "USB cable: no Bluetooth change, no Wi-Fi, no TCP server; media over the BMW Bluetooth source");
+        ELOG("Main", "USB cable: no Bluetooth change, no Wi-Fi, no TCP server; direct audio if preflight succeeds");
     } else {
         std::string source;
         if (!evo::loadAccessPoint(app.ap, source)) {
@@ -466,9 +468,14 @@ int main(int argc, char** argv) {
                 fclose(f);
             }
         }
-        knob.setPeer(&app.kombiMost);
+        knob.setPeer(&mostPeers);
         if (!knob.start(input, evo::ServiceApp::knobEvent, &app)) {
             ELOG("Main", "controller unavailable for this run");
+        }
+    } else if (usb && access(evo::contract::kUsbBluetoothAudio, F_OK) != 0) {
+        knob.setPeer(&mostPeers);
+        if (!knob.start(input, nullptr, nullptr)) {
+            ELOG("Main", "vMOST unavailable for direct audio");
         }
     }
     app.markReady();
@@ -543,11 +550,12 @@ int main(int argc, char** argv) {
     touch.setOwned(false);
     knob.setOwned(false);
     touch.stop();
-    knob.stop();        // UDP 30567 back to iDrive, vMOST copies deregistered, before the session goes
     app.pill.stop();    // nothing calls show() any more
     control.stop();     // state file removed: the iDrive app shows "Android Auto" again
     app.server.stop();  // join the accept thread before stopping its last session
     app.session.stop();
+    app.audioPlayer.stop();
+    knob.stop();  // release owned routes and vMOST copies after the session and playback stop
     app.video.stop();
     app.kombi.stop();
     evo::kombi::closeBmwGuidance();

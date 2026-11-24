@@ -3,13 +3,17 @@
 // The service's wireless loop (wireless_loop) and app commands (service_app), with a fake Alps link and handshake.
 // The AA session runs on a socketpair. The peeks' timing on its own: tests/test_peek_timing.cpp.
 #include <assert.h>
+#include <dlfcn.h>
+#include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <vector>
 
 #include "alps_spp.hpp"
 #include "evo_ap.hpp"
@@ -117,6 +121,156 @@ static bool linkClosedWithin(unsigned ms) {
         usleep(10000);
     }
     return !fixtureLink;
+}
+
+static void usbAudioFailure(const char* library) {
+    void* fake = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    assert(fake);
+    typedef void (*SetError)(int);
+    SetError setError = nullptr;
+    *reinterpret_cast<void**>(&setError) = dlsym(fake, "fake_audio_error");
+    assert(setError);
+    evo::ServiceApp app(50000, false, &quitFlag);
+    app.session.setDisconnectCallback(evo::ServiceApp::ended, &app);
+    assert(app.audioPlayer.start("test", library));
+    app.directAudio = app.projectionOverUsb = true;
+    int pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    assert(app.session.start(pair[0]));
+    const uint8_t pcm[] = {1, 0, 2, 0};
+    setError(-EIO);
+    evo::AudioPlayer::stream(9, 7, 0, true, &app.audioPlayer);
+    evo::AudioPlayer::data(9, 7, pcm, sizeof(pcm), 0, &app.audioPlayer);
+    for (unsigned i = 0; i < 200 && !app.audioPlayer.failure(); ++i) {
+        usleep(10000);
+    }
+    assert(app.audioPlayer.failure() == -EIO);
+    app.turn(false);
+    for (unsigned i = 0; i < 200 && app.session.isActive(); ++i) {
+        usleep(10000);
+    }
+    app.session.stop();
+    assert(!app.session.isActive() && app.audioFallback && !app.directAudio && !app.session.phoneSaidGoodbye());
+    app.audioPlayer.stop();
+    close(pair[1]);
+    dlclose(fake);
+    puts("PASS USB audio failure: interrupted session, sticky Bluetooth fallback");
+}
+
+class AudioGatePort : public evo::VmostPort {
+public:
+    uint16_t function;
+    std::vector<uint8_t> data;
+    AudioGatePort() : function(0) {}
+    int send(evo::VmostMsgOut& message) override {
+        function = message.fkt;
+        data.assign(message.data, message.data + message.len);
+        return 0;
+    }
+    int shadow(uint8_t, uint8_t, bool) override { return 0; }
+    void pump(int) override {}
+};
+
+static void audioGateTable(evo::AudioRoute& route, bool active) {
+    const uint8_t bytes[] = {0, 0, 3, 0x15, 0};
+    evo::VmostMsgView message = {0, 3, 0, 0xC03, 0xC, static_cast<uint16_t>(active ? 5 : 2), bytes};
+    route.onMessage(message);
+}
+
+static void audioGateResult(evo::AudioRoute& route, AudioGatePort& port) {
+    assert(port.data.size() == 4);
+    evo::VmostMsgView message = {0, 3, 0, port.function, 0xD, 2, &port.data[0]};
+    route.onMessage(message);
+}
+
+struct AudioGateConnection {
+    evo::ServiceApp* app;
+    int fd;
+};
+
+static void* audioGateConnect(void* user) {
+    AudioGateConnection* connection = static_cast<AudioGateConnection*>(user);
+    connection->app->usbPhoneReady(connection->fd);
+    return nullptr;
+}
+
+static void usbAudioCleanupGate() {
+    evo::ServiceApp app(50000, false, &quitFlag);
+    AudioGatePort port;
+    app.markReady();
+    app.audioFallback = true;
+    app.audioRoute.enable(true);
+    const uint32_t now = evo::monoMs();
+    app.audioRoute.tick(now, port);
+    audioGateTable(app.audioRoute, false);
+    app.audioRoute.tick(now + 1, port);
+    app.audioRoute.request(0x315);
+    app.audioRoute.tick(now + 2, port);
+    audioGateTable(app.audioRoute, false);
+    app.audioRoute.tick(now + 3, port);
+    assert(port.function == 0x53);
+    audioGateResult(app.audioRoute, port);
+    app.audioRoute.tick(now + 4, port);
+    audioGateTable(app.audioRoute, true);
+    app.audioRoute.tick(now + 5, port);
+    assert(app.audioRoute.owns(0x315));
+    app.audioRouteUsed = true;
+    app.audioRoute.request(0);
+    int pair[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    AudioGateConnection connection = {&app, pair[0]};
+    pthread_t thread;
+    assert(pthread_create(&thread, nullptr, audioGateConnect, &connection) == 0);
+    for (unsigned i = 0; i < 200 && !app.projectionBusy(); ++i) {
+        usleep(10000);
+    }
+    usleep(100000);
+    assert(app.projectionBusy() && !app.session.isActive());
+    app.audioRoute.tick(now + 1100, port);
+    audioGateTable(app.audioRoute, true);
+    app.audioRoute.tick(now + 1101, port);
+    assert(port.function == 0x54 && !app.session.isActive());
+    audioGateResult(app.audioRoute, port);
+    app.audioRoute.tick(now + 1102, port);
+    audioGateTable(app.audioRoute, false);
+    app.audioRoute.tick(now + 1103, port);
+    pthread_join(thread, nullptr);
+    assert(app.session.isActive() && !app.audioRouteUsed);
+    app.session.stop();
+    close(pair[1]);
+
+    app.audioRoute.request(0x315);
+    app.audioRoute.tick(now + 1200, port);
+    audioGateTable(app.audioRoute, false);
+    app.audioRoute.tick(now + 1201, port);
+    assert(port.function == 0x53);
+    app.audioRouteUsed = true;
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    connection.fd = pair[0];
+    assert(pthread_create(&thread, nullptr, audioGateConnect, &connection) == 0);
+    for (unsigned i = 0; i < 200 && !app.projectionBusy(); ++i) {
+        usleep(10000);
+    }
+    usleep(100000);
+    app.requestStop();
+    pthread_join(thread, nullptr);
+    assert(!app.session.isActive() && !app.audioRoute.quiescent());
+    close(pair[1]);
+    audioGateResult(app.audioRoute, port);
+    app.audioRoute.tick(now + 1202, port);
+    audioGateTable(app.audioRoute, true);
+    app.audioRoute.tick(now + 1203, port);
+    app.audioRoute.tick(now + 2203, port);
+    audioGateTable(app.audioRoute, true);
+    app.audioRoute.tick(now + 2204, port);
+    assert(port.function == 0x54);
+    audioGateResult(app.audioRoute, port);
+    app.audioRoute.tick(now + 2205, port);
+    audioGateTable(app.audioRoute, false);
+    app.audioRoute.tick(now + 2206, port);
+    assert(app.audioRoute.quiescent());
+    app.audioRoute.finish(port);
+    puts("PASS USB audio cleanup: session waits for route release and stops safely");
 }
 // A session on a socketpair that ends by itself, without ByeBye: the phone's side of the connection closes.
 static void loseSession(evo::ServiceApp& app) {
@@ -360,4 +514,9 @@ int main() {
         "PASS actual wireless loop: no handshake during TCP preparation or active session, nor into the BMW app's link "
         "found then, rearmed after session stop, Bluetooth link closed after a lost wireless session; app commands and "
         "volume through the peeks; PC socketpair only");
+    const char* audioLibrary = getenv("ENTRY_AAD_AUDIO_TEST_LIB");
+    if (audioLibrary) {
+        usbAudioFailure(audioLibrary);
+    }
+    usbAudioCleanupGate();
 }

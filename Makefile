@@ -44,6 +44,7 @@ USB_OBJ = $(USB_SRC:.cpp=.o)
 DAEMON_SRC = platform/alps_spp.cpp platform/alps_spp_codec.cpp platform/evo_ap.cpp \
              platform/evo_ap_config.cpp platform/evo_spp_snapshot.cpp platform/evo_touch.cpp platform/evo_knob.cpp \
              platform/vmost_client.cpp platform/evo_control.cpp platform/evo_sdr_sensors.cpp platform/evo_mic.cpp \
+             platform/audio_output.cpp platform/audio_player.cpp platform/audio_route.cpp \
              $(KOMBI_SRC) platform/evo_bmw_guidance.cpp platform/evo_pill.cpp \
              platform/peek_timing.cpp platform/wireless_loop.cpp platform/service_app.cpp platform/main.cpp \
              platform/wifi_link.cpp $(USB_SRC)
@@ -52,13 +53,14 @@ SUPERVISOR_OBJ = tools/aa_supervisor.o platform/evo_spp_snapshot.o platform/alps
             platform/evo_ilm.o platform/evo_process.o platform/evo_ap.o platform/evo_ap_config.o platform/evo_wlan.o \
             platform/evo_reboot.o platform/vmost_client.o platform/usb_accessory.o platform/log_copy.o \
             platform/update_package.o platform/update_install.o platform/update_car.o
-CHECK_OBJ = tools/evo_check.o platform/alps_spp.o platform/alps_spp_codec.o platform/evo_process.o
+CHECK_OBJ = tools/evo_check.o platform/alps_spp.o platform/alps_spp_codec.o platform/evo_process.o \
+            platform/audio_probe.o platform/vmost_client.o
 CAPTURE_OBJ = tools/evo_capture.o
 ARM_OBJ = $(sort $(DAEMON_OBJ) $(PLATFORM_OBJ) $(SUPERVISOR_OBJ) $(CHECK_OBJ) $(CAPTURE_OBJ))
 # The service's modules tests/test_wireless_lifecycle.cpp links around its fake Alps link and handshake.
 LIFECYCLE_OBJ = $(PLATFORM_OBJ) platform/evo_touch.o platform/evo_knob.o platform/vmost_client.o platform/evo_control.o \
                 platform/evo_mic.o platform/evo_pill.o $(KOMBI_OBJ) platform/evo_bmw_guidance.o platform/peek_timing.o \
-                platform/wifi_link.o $(USB_OBJ)
+                platform/wifi_link.o platform/audio_output.o platform/audio_player.o platform/audio_route.o $(USB_OBJ)
 
 VIDEO_LIBS = -l:libxsvideo.so.4 -l:libdrm_omap.so.1 -l:libdrm.so.2 -lpthread -lrt
 
@@ -125,7 +127,7 @@ sdk-link-check: hmiapp/libEntryAad.so
 # Read-only diagnostics, run by hand on the car; neither is part of a release.
 dev-tools: evo-check evo-capture
 evo-check: $(CHECK_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(HARDEN_LDFLAGS) $(LDSHLIB) -l:libdbus-1.so.3 -lpthread -lrt
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(HARDEN_LDFLAGS) $(LDSHLIB) -l:libdbus-1.so.3 -lpthread -lrt -ldl
 # Passive SOME/IP recorder (tools/evo_capture.cpp: receive only, nothing sent).
 evo-capture: $(CAPTURE_OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(HARDEN_LDFLAGS) $(LDSHLIB) -lrt
@@ -167,7 +169,7 @@ SPP_FIXTURE_LIB = $(HOME)/entrynav2/rootfs/opt/app/usr/BTMedia/evolution/stack/l
 # evo-check built for the PC: two tests drive it. Phony, so built once per make run, always from the current sources.
 tests/evo-check-host:
 	$(HOST_CXX) $(HOST_FLAGS) tools/evo_check.cpp platform/alps_spp.cpp platform/alps_spp_codec.cpp \
-	    platform/evo_process.cpp $(HOST_DBUS) -o $@
+	    platform/evo_process.cpp platform/audio_probe.cpp platform/vmost_client.cpp $(HOST_DBUS) -ldl -o $@
 
 test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture-host test-usb-host \
            test-media-host test-frame-host test-session-host
@@ -367,6 +369,21 @@ test-spp-host: tests/evo-check-host
 test-media-host:
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_media_recall.cpp platform/evo_knob.cpp platform/vmost_client.cpp -ldl -o tests/test-media-recall
 	./tests/test-media-recall
+	gcc -std=c99 -Wall -Wextra -Werror -shared -fPIC tests/fake_vmostclient.c -o tests/fake-vmostclient.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_audio_probe.cpp platform/audio_probe.cpp platform/vmost_client.cpp -ldl -o tests/test-audio-probe
+	./tests/test-audio-probe $(CURDIR)/tests/fake-vmostclient.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_audio_route.cpp platform/audio_route.cpp platform/vmost_client.cpp -ldl -o tests/test-audio-route
+	./tests/test-audio-route
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_audio_mixer.cpp -o tests/test-audio-mixer
+	./tests/test-audio-mixer
+	gcc -std=c99 -Wall -Wextra -Werror -shared -fPIC tests/fake_audio_output.c -o tests/fake-audio-output.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_audio_output.cpp platform/audio_output.cpp -ldl -o tests/test-audio-output
+	./tests/test-audio-output $(CURDIR)/tests/fake-audio-output.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_audio_player.cpp platform/audio_player.cpp platform/audio_output.cpp -ldl -o tests/test-audio-player
+	./tests/test-audio-player $(CURDIR)/tests/fake-audio-output.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_routed_audio.cpp platform/audio_player.cpp platform/audio_output.cpp \
+	    platform/audio_route.cpp platform/vmost_client.cpp -ldl -o tests/test-routed-audio
+	./tests/test-routed-audio $(CURDIR)/tests/fake-audio-output.so
 
 test-media-arm-build:
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_media_recall.cpp platform/evo_knob.cpp platform/vmost_client.cpp \

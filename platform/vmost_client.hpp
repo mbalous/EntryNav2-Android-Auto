@@ -148,6 +148,41 @@ public:
     virtual int dueInMs(uint32_t nowMs) const = 0;  // how soon tick() has work; the reader waits 100 ms at most
     virtual void tick(uint32_t nowMs, VmostPort& port) = 0;
     virtual void finish(VmostPort& port) = 0;  // the connection closes right after
+    virtual void connectionLost() {}           // no more requests can be sent on this connection
+};
+
+class VmostPeerPair : public VmostPeer {
+public:
+    VmostPeerPair(VmostPeer& first, VmostPeer& second) : first_(first), second_(second) {}
+    bool wants(const VmostMsgView& m) const override { return first_.wants(m) || second_.wants(m); }
+    void onMessage(const VmostMsgView& m) override {
+        if (first_.wants(m)) {
+            first_.onMessage(m);
+        }
+        if (second_.wants(m)) {
+            second_.onMessage(m);
+        }
+    }
+    int dueInMs(uint32_t nowMs) const override {
+        const int first = first_.dueInMs(nowMs), second = second_.dueInMs(nowMs);
+        return first < second ? first : second;
+    }
+    void tick(uint32_t nowMs, VmostPort& port) override {
+        first_.tick(nowMs, port);
+        second_.tick(nowMs, port);
+    }
+    void finish(VmostPort& port) override {
+        first_.finish(port);
+        second_.finish(port);
+    }
+    void connectionLost() override {
+        first_.connectionLost();
+        second_.connectionLost();
+    }
+
+private:
+    VmostPeer& first_;
+    VmostPeer& second_;
 };
 
 }  // namespace evo

@@ -41,6 +41,10 @@ ServiceApp::ServiceApp(uint16_t p, bool v, std::atomic<int>* quit)
       wppReply(false),
       wppAccepted(false),
       projectionOverUsb(false),
+      directAudio(false),
+      audioFallback(false),
+      audioRouteUsed(false),
+      audioCleanupRequested(false),
       lostWireless(0),
       quit_(quit) {
     pthread_mutex_init(&mu, nullptr);
@@ -54,6 +58,7 @@ ServiceApp::~ServiceApp() {
     mic.stop();
     kombi.stop();
     session.stop();
+    audioPlayer.stop();
     video.stop();
     bt.stop();
     pthread_mutex_destroy(&mu);
@@ -120,6 +125,23 @@ unsigned ServiceApp::lostSessions() {
 
 ServiceApp::Turn ServiceApp::turn(bool service) {
     Turn t;
+    if (audioPlayer.failure() && pthread_mutex_trylock(&connectMu) == 0) {
+        pthread_mutex_lock(&mu);
+        const bool fallback = directAudio && session.isActive();
+        if (fallback) {
+            directAudio = false;
+            audioFallback = true;
+        }
+        pthread_mutex_unlock(&mu);
+        if (fallback) {
+            ELOG("ServiceApp",
+                 "direct audio failed (%d): restarting USB in Bluetooth mode for this run; Bluetooth media "
+                 "connection is not checked",
+                 audioPlayer.failure());
+            session.requestDisconnect();
+        }
+        pthread_mutex_unlock(&connectMu);
+    }
     pthread_mutex_lock(&mu);
     t.failed = wirelessDone;
     t.active = session.isActive();
@@ -386,6 +408,7 @@ void ServiceApp::command(const ControlCommand& c, void* user) {
         a->parkAssist = owns;
     } else if (c.verb == "call") {  // iDrive app (CDS communication.callStatus): phone keys go to iDrive's call screen
         a->inCall = c.arg != 0;
+        a->audioPlayer.setCall(a->inCall);
         a->volume.call(a->inCall);  // during a call the pill shows the call's volume (volume_state.hpp)
         if (a->knob) {
             a->knob->setPhoneToIdrive(c.arg != 0);
@@ -448,6 +471,12 @@ void ServiceApp::ended(void* user) {
     a->kombiMost.onSessionEnded();
     const bool goodbye = a->session.phoneSaidGoodbye();
     pthread_mutex_lock(&a->mu);
+    const bool audioFailed =
+        a->projectionOverUsb && a->directAudio && (a->session.audioFailed() || a->audioPlayer.failure() != 0);
+    if (audioFailed) {
+        a->audioFallback = true;
+    }
+    a->directAudio = false;
     a->focus = false;
     a->asking = false;
     a->mediaPress.cancel();
@@ -457,6 +486,9 @@ void ServiceApp::ended(void* user) {
         ++a->lostWireless;
     }
     pthread_mutex_unlock(&a->mu);
+    if (audioFailed) {
+        ELOG("ServiceApp", "direct audio failed: next USB session uses Bluetooth; media connection is not checked");
+    }
     a->server.notifySessionEnded();
     ELOG("ServiceApp", "session ended%s", goodbye ? " (the phone said goodbye)" : lost ? " (lost)" : "");
 }
@@ -495,6 +527,32 @@ void ServiceApp::startProjection(int fd, bool overUsb) {
     pthread_mutex_unlock(&a->mu);
     ELOG("ServiceApp", "phone %s connection received; preparing the video and the AA session", overUsb ? "USB" : "TCP");
     a->session.stop();  // join callbacks before destroying/reinitializing video buffers
+    a->audioPlayer.stop();
+    a->session.setAudioCallbacks(nullptr, nullptr);
+    if (a->audioRouteUsed) {
+        if (!a->audioCleanupRequested) {
+            a->audioRoute.enable(false);
+            a->audioCleanupRequested = true;
+        }
+        for (unsigned waited = 0; !a->audioRoute.quiescent() && waited < 12000 && !a->stopRequested(); waited += 50) {
+            usleep(50000);
+        }
+        if (a->stopRequested() || !a->audioRoute.quiescent()) {
+            if (!a->audioRoute.quiescent()) {
+                ELOG("ServiceApp", "audio route cleanup unconfirmed; refusing to start a new session");
+            }
+            close(fd);
+            a->server.notifySessionEnded();
+            pthread_mutex_lock(&a->mu);
+            a->tcpPreparing = false;
+            pthread_mutex_unlock(&a->mu);
+            pthread_mutex_unlock(&a->connectMu);
+            return;
+        }
+        a->audioRouteUsed = false;
+        a->audioCleanupRequested = false;
+        a->audioRoute.enable(true);
+    }
     bool videoOk = true;
     if (a->videoEnabled) {
         pthread_mutex_lock(&a->videoMu);
@@ -518,6 +576,29 @@ void ServiceApp::startProjection(int fd, bool overUsb) {
     if (aside) {
         ELOG("ServiceApp", "Android Auto starts aside: the iDrive app shows it once iDrive is on its page");
     }
+    bool direct = false;
+    pthread_mutex_lock(&a->mu);
+    const bool mayTryAudio = overUsb && !a->audioFallback && access(contract::kUsbBluetoothAudio, F_OK) != 0;
+    pthread_mutex_unlock(&a->mu);
+    for (unsigned waited = 0;
+         mayTryAudio && !a->audioRoute.ready() && !a->audioRoute.failure() && waited < 2000 && !a->stopRequested();
+         waited += 50) {
+        usleep(50000);
+    }
+    if (mayTryAudio && a->audioRoute.ready()) {
+        direct = a->audioPlayer.startRouted(a->audioRoute, "entertainment", "carplay_alt");
+        if (direct) {
+            a->audioRouteUsed = true;
+            a->session.setAudioCallbacks(AudioPlayer::data, AudioPlayer::stream, &a->audioPlayer);
+            ELOG("ServiceApp", "USB direct audio: experimental EntryNav2 playback profile");
+        }
+    }
+    if (overUsb && !direct) {
+        ELOG("ServiceApp", "USB audio uses Bluetooth; verify that Bluetooth media is connected (not checked here)");
+    }
+    pthread_mutex_lock(&a->mu);
+    a->directAudio = direct;
+    pthread_mutex_unlock(&a->mu);
     if (!overUsb) {
         a->wifiLink.connected(fd);  // before the session owns fd
     }

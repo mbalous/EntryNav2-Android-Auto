@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // The session's message handlers, one per route of core/aa_protocol.hpp, grouped by channel.
 #include <cstdio>
+#include <limits>
 
 #include "aa_protocol.hpp"
 #include "aa_session.hpp"
 #include "crash_handler.hpp"
 #include "dhu_sdp.h"
+#include "pb.hpp"
 #include "sdr_builder.hpp"
 
 namespace aa {
@@ -37,6 +39,21 @@ const uint8_t* bodyOf(const Message& message) {
 
 size_t bodySize(const Message& message) {
     return message.size() > kMessageIdSize ? message.size() - kMessageIdSize : 0;
+}
+
+bool audioStartFields(const Message& message, uint32_t& session, uint32_t& config) {
+    session = config = 0;
+    pb::FieldReader reader(bodyOf(message), bodySize(message));
+    pb::Field field;
+    while (reader.next(field)) {
+        if (field.number == 1 || field.number == 2) {
+            if (field.type != pb::kVarint || field.value > std::numeric_limits<uint32_t>::max()) {
+                return false;
+            }
+            (field.number == 1 ? session : config) = static_cast<uint32_t>(field.value);
+        }
+    }
+    return !reader.malformed();
 }
 
 }  // namespace
@@ -71,6 +88,7 @@ bool AASession::dispatch(uint8_t channel, const Message& message) {
             break;
         case Route::kAudioStop:
             printf("[AASession] >>> Received AV STOP_INDICATION on Channel %u.\n", channel);
+            stopAudio(channel);
             break;
         case Route::kInputBinding:
             onInputBinding(channel);
@@ -193,7 +211,7 @@ void AASession::onDiscovery() {
     printf("[AASession] >>> Received ServiceDiscoveryRequest from phone! Sending ServiceDiscoveryResponse...\n");
     const Message response = message::discoveryResponse(
         buildCarServiceDiscovery(kDhuSdpProtobuf, kDhuSdpProtobufLen, vehicleFile_, softwareVersion_, display_,
-                                 carMake_, codedSide_, codedModel_));
+                                 carMake_, codedSide_, codedModel_, audioData_.fn != nullptr));
     if (sendSealed(channel::kControl, response)) {
         printf("[AASession] >>> Sent ServiceDiscoveryResponse (%u bytes)\n", static_cast<unsigned>(response.size()));
     }
@@ -285,12 +303,39 @@ void AASession::onSetup(uint8_t channel) {
 // stream stopped and started again (guidance, Assistant) gets a new one, and acks with 0 then fill the phone's window
 // of unacked messages: the stream stalls.
 void AASession::onStart(uint8_t channel, const Message& message) {
+    if (channel::isAudioSink(channel) && audioStream_.fn) {
+        stopAudio(channel);
+    }
     const uint32_t session = bodyField(message, 1);
     if (session != kNoField) {
         mediaSessions_[channel] = session;
     }
     printf("[AASession] >>> AV START_INDICATION on Channel %u (session %u)\n", channel,
            session == kNoField ? 0u : session);
+    if (channel::isAudioSink(channel) && audioStream_.fn) {
+        uint32_t audioSession, config;
+        if (!audioStartFields(message, audioSession, config) ||
+            config >= (channel == channel::kGuidanceAudio ? 2u : 1u)) {
+            fprintf(stderr, "[AASession] invalid audio START on channel %u; ending session\n", channel);
+            audioFailed_.store(true);
+            giveUp();
+            return;
+        }
+        const unsigned index = channel == channel::kMediaAudio ? 1 : 0;
+        mediaSessions_[channel] = audioSession;
+        audioConfig_[index] = config;
+        audioActive_[index] = true;
+        audioStream_.fn(channel, audioSession, config, true, audioStream_.user);
+    }
+}
+
+void AASession::stopAudio(uint8_t channel) {
+    flushAudioAcks(channel);
+    const unsigned index = channel == channel::kMediaAudio ? 1 : 0;
+    if (audioActive_[index]) {
+        audioActive_[index] = false;
+        audioStream_.fn(channel, mediaSessions_[channel], audioConfig_[index], false, audioStream_.user);
+    }
 }
 
 // Media of any channel: counted, video handed to the callbacks, everything acked. The phone counts each media message
@@ -298,20 +343,34 @@ void AASession::onStart(uint8_t channel, const Message& message) {
 // short to hold a picture is acked too, or it would hold a slot of that window for the rest of the session.
 void AASession::onMedia(uint8_t channel, uint16_t id, const Message& message) {
     ++mediaMessages_;
+    bool deferredAck = false;
     if (mediaMessages_ % kMediaLogEvery == 1) {
         printf("[AASession] >>> Streaming Media Frame %u on Channel %u (%u bytes)\n", mediaMessages_, channel,
                static_cast<unsigned>(message.size()));
     }
     if (channel::isAudioSink(channel) && id == msg::kMediaData) {
-        // Sound plays over the car's Bluetooth: phone audio is only counted (8-byte timestamp, then s16le PCM).
         if (message.size() > kTimestampedHeader) {
-            uint32_t& count = audioMessages_[channel == channel::kMediaAudio ? 1 : 0];
+            const unsigned index = channel == channel::kMediaAudio ? 1 : 0;
+            uint32_t& count = audioMessages_[index];
             ++count;
             if (count <= kAudioLoggedFirst || count % kAudioLogEvery == 0) {
                 printf("[AASession] audio %s frame #%u: %u bytes PCM, pts=%llu\n",
                        channel == channel::kMediaAudio ? "media(ch9)" : "speech(ch8)", count,
                        static_cast<unsigned>(message.size() - kTimestampedHeader),
                        static_cast<unsigned long long>(bigEndian64(&message[kMessageIdSize])));
+            }
+            const size_t pcmSize = message.size() - kTimestampedHeader;
+            const size_t frameSize = index == 1 ? 4 : 2;
+            if (audioData_.fn && audioActive_[index]) {
+                if (pcmSize % frameSize == 0) {
+                    audioData_.fn(channel, mediaSessions_[channel], &message[kTimestampedHeader], pcmSize,
+                                  bigEndian64(&message[kMessageIdSize]), audioData_.user);
+                    const uint32_t rate = index == 1 || audioConfig_[index] == 1 ? 48000 : 16000;
+                    deferAudioAck(channel, mediaSessions_[channel], pcmSize, rate);
+                    deferredAck = true;
+                } else {
+                    fprintf(stderr, "[AASession] dropping unaligned audio frame on channel %u\n", channel);
+                }
             }
         }
     } else if (channel == channel::kVideo) {
@@ -336,7 +395,9 @@ void AASession::onMedia(uint8_t channel, uint16_t id, const Message& message) {
             g_trail.stage = kTrailHandler;
         }
     }
-    sendSealed(channel, message::mediaAck(mediaSessions_[channel]));
+    if (!deferredAck) {
+        sendSealed(channel, message::mediaAck(mediaSessions_[channel]));
+    }
 }
 
 // A message the phone sent on one of its streams, but lost on the way (a fragment that did not decrypt, a reassembly
