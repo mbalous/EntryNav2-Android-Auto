@@ -16,6 +16,7 @@
     } while (0)
 int main(int argc, char** argv) {
     const char* path = argc > 1 ? argv[1] : "./libEntryAad.so";
+    const char* expectedName = argc > 2 ? argv[2] : "Android Auto";
     void* fw = dlopen("libAppFramework.A.so", RTLD_NOW | RTLD_GLOBAL);  // HmiMain3D links it: global in the HMI
     if (!fw) {
         fprintf(stderr, "%s\n", dlerror());
@@ -40,7 +41,7 @@ int main(int argc, char** argv) {
     memcpy(&create, info + 0x10, 4);
     memcpy(&destroy, info + 0x14, 4);
     CHECK(sizeof(void*) == 4 && major == 1 && minor == 0 && rhmi == 1 && create && destroy &&
-          !strcmp(name, "Android Auto"));
+          !strcmp(name, expectedName));
     // Slots replaced by createApp(): onError 21, onInit 22, onFinalize 23 (from the vtable address point).
     void** vt = static_cast<void**>(dlsym(fw, "_ZTVN3bmw9PluginAppE"));
     CHECK(vt);
@@ -50,8 +51,9 @@ int main(int argc, char** argv) {
     CHECK(onError && onInit && onFinalize);
     CHECK(vt[2 + 21] == onError && vt[2 + 22] == onInit && vt[2 + 23] == onFinalize);
     CHECK(dlsym(RTLD_DEFAULT, "_ZTVN3bmw8RunnableE"));  // Runnable vtable used by the app's posted tasks
-    puts(
-        "PASS libEntryAad.so loaded as ManagedPluginApp does (the HU's HMI libraries); pluginAppInfo valid; "
-        "slots onError/onInit/onFinalize = 21/22/23 confirmed on the real bmw::PluginApp");
+    printf(
+        "PASS %s loaded as ManagedPluginApp does (the HU's HMI libraries); pluginAppInfo valid; "
+        "slots onError/onInit/onFinalize = 21/22/23 confirmed on the real bmw::PluginApp\n",
+        path);
     return 0;
 }

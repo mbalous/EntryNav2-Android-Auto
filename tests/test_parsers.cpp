@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "../hmiapp/live_data.hpp"
 #include "alps_spp.hpp"
 #include "ap_uapsd.hpp"
 #include "evo_ap.hpp"
@@ -133,7 +134,43 @@ void uapsdCases() {
     CHECK(strstr(evo::describeUapsdOffer(evo::UapsdOffer::kSetRefused), "left on"));
 }
 
+void liveDataCases() {
+    evo::app::live_data::Model model;
+    CHECK(model.oil.text(false).empty() && model.coolant.text(false).empty());
+    CHECK(model.oil.gaugePosition() == -1 && model.coolant.gaugePosition() == -1);
+    model.updateTemperatures("{\"temperature\":{\"engine\":28,\"oil\":-10.4}}");
+    CHECK(model.oil.text(false) == L"-10 \u00b0C");
+    CHECK(model.coolant.text(false) == L"28 \u00b0C");
+    CHECK(model.oil.gaugePosition() == 0 && model.coolant.gaugePosition() == 28);
+    model.updateUnits("{\"units\":{\"distance\":3,\"temperature\":2}}");
+    CHECK(model.fahrenheit && model.oil.text(model.fahrenheit) == L"13 \u00b0F");
+    CHECK(model.coolant.text(model.fahrenheit) == L"82 \u00b0F");
+    CHECK(model.oil.gaugePosition() == 0 && model.coolant.gaugePosition() == 28);
+    model.updateTemperatures("{\"temperature\":{\"engine\":120,\"oil\":109.4}}");
+    CHECK(model.oil.gaugePosition() == 109 && model.coolant.gaugePosition() == 120);
+    model.updateTemperatures("{\"temperature\":{\"engine\":150,\"oil\":110}}");
+    CHECK(model.oil.gaugePosition() == 110 && model.coolant.gaugePosition() == 120);
+    model.updateUnits("{\"temperature\":2}");
+    CHECK(!model.fahrenheit);
+    model.updateTemperatures("{\"temperature\":{\"engine\":90,\"oil\":255}}");
+    CHECK(!model.oil.available && model.coolant.celsius == 90 && model.coolant.available);
+    model.updateTemperatures("{\"temperature\":{\"engine\":207,\"oil\":-48}}");
+    CHECK(!model.oil.available && !model.coolant.available);
+    CHECK(model.oil.gaugePosition() == -1 && model.coolant.gaugePosition() == -1);
+    model.updateTemperatures("{\"temperature\":{\"other\":{\"engine\":90},\"oil\":0}}");
+    CHECK(model.oil.available && model.oil.celsius == 0 && !model.coolant.available);
+    model.updateTemperatures("{\"temperature\":{\"oil\":\"100\",\"engine\":1e999}}");
+    CHECK(!model.oil.available && !model.coolant.available);
+    model.updateTemperatures("{\"temperature\":{\"oil\":100");
+    CHECK(!model.oil.available && !model.coolant.available);
+    model.updateTemperatures("{\"temperature\":{\"oil\":100}} trailing");
+    CHECK(!model.oil.available && !model.coolant.available);
+    model.updateTemperatures("{\"error\":401}");
+    CHECK(!model.oil.available && !model.coolant.available);
+}
+
 int main() {
+    liveDataCases();
     uint8_t uuid[16];
     const uint8_t expected[] = {0x4d, 0xe1, 0x7a, 0x00, 0x52, 0xcb, 0x11, 0xe6,
                                 0xbd, 0xf4, 0x08, 0x00, 0x20, 0x0c, 0x9a, 0x66};

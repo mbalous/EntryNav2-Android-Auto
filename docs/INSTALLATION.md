@@ -18,7 +18,7 @@ voiture.
 - Le **mot de passe root** de l'unité. Il n'est pas fourni avec ce projet.
 - L'archive `entrynav2-android-auto-<version>-armhf.tar` d'une [version publiée](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases),
   dont l'empreinte SHA-256 correspond au fichier `.sha256` publié à côté, ou fabriquée par `tools/package_release.py`
-  ([compiler](../README.fr.md#compiler)). Jusqu'à la 0.12.0-rc.6, l'archive et son dossier s'appelaient
+  ([compiler](../README.md#building-from-source)). Jusqu'à la 0.12.0-rc.6, l'archive et son dossier s'appelaient
   `entry-aad-<version>` : pour ces versions, remplacer `entrynav2-android-auto` par `entry-aad` dans les commandes.
 
 Le numéro de version ne s'écrit que deux fois : dans la commande `scp` de l'étape 1 et sur la ligne `V=` de l'étape 2.

@@ -34,6 +34,7 @@
 *.so
 __pycache__/
 /hmiapp/EntryAad_ALL_*.zip
+/hmiapp/EntryLiveData_ALL_Texts.zip
 
 # tests/: sources and fixtures only, without the tests of the older kits
 /tests/*
@@ -53,6 +54,7 @@ __pycache__/
 !/tools/verify_binary.py
 !/tools/verify_core.py
 !/tools/verify_repo.py
+!/tools/verify_sdk.py
 !/tools/verify_wireless.py
 
 # The build image is rebuilt from the Dockerfile; its wrapper is ours to keep

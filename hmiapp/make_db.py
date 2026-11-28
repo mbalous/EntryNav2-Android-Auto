@@ -7,7 +7,7 @@ EntryAad_ALL_Texts.zip holds <lang>.txt ("id=text" lines, same format as BMW's P
 EntryAad_ALL_Images.zip holds <imageId>.png, from hmiapp/res. Both are reproducible: same input, same bytes. The Help
 page's title carries the project's version (VERSION), so a photo of it tells which version a car runs.
 
-Usage: make_db.py <res dir> <output dir>
+Usage: make_db.py <res dir> <output dir> [--live-data]
 """
 
 import struct
@@ -218,6 +218,17 @@ LANG_TEXTS = {  # ASCII only
     },
 }
 LANG_TEXTS["fr-CA"] = LANG_TEXTS["fr-FR"]
+LIVE_DATA_TEXTS = {1: "Live Data", 2: "Engine oil temperature", 3: "Coolant temperature", 4: "Unavailable"}
+LIVE_DATA_LANG_TEXTS = {
+    "de": {1: "Live-Daten", 2: "Motoroeltemperatur", 3: "Kuehlmitteltemperatur", 4: "Nicht verfuegbar"},
+    "fr-FR": {
+        1: "Donnees en direct",
+        2: "Temperature de l'huile moteur",
+        3: "Temperature du liquide de refroidissement",
+        4: "Indisponible",
+    },
+}
+LIVE_DATA_LANG_TEXTS["fr-CA"] = LIVE_DATA_LANG_TEXTS["fr-FR"]
 HELP_TITLE = 27  # "<Help> - <version>": title of the Help page (its six lines are full, the page does not scroll)
 FIXED_DATE = (2026, 11, 2, 0, 0, 0)  # the same date in every archive: reproducible files
 VERSION_FILE = Path(__file__).resolve().parents[1] / "VERSION"
@@ -238,13 +249,13 @@ def project_version():
     return version
 
 
-def write_texts(path, version):
+def write_texts(path, defaults=TEXTS, translations=LANG_TEXTS, version=None):
     """One <lang>.txt per language: English, overridden by the language's own texts."""
     with zipfile.ZipFile(path, "w") as archive:
         for lang, langname in LANGS.items():
-            texts = dict(TEXTS)
-            texts.update(LANG_TEXTS.get(lang, {}))
-            texts[HELP_TITLE] = f"{texts[16]} - {version}"
+            texts = defaults | translations.get(lang, {})
+            if version is not None:
+                texts[HELP_TITLE] = f"{texts[16]} - {version}"
             body = f"100000={langname}\n" + "".join(f"{key}={value}\n" for key, value in sorted(texts.items()))
             if not body.isascii():
                 raise SystemExit(f"FAIL: {lang} texts must stay ASCII")
@@ -278,11 +289,15 @@ def write_images(path, res):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("Usage: make_db.py <res dir> <output dir>")
+    if len(sys.argv) < 3 or sys.argv[3:] not in ([], ["--live-data"]):
+        raise SystemExit("Usage: make_db.py <res dir> <output dir> [--live-data]")
     res, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
-    write_texts(out / "EntryAad_ALL_Texts.zip", project_version())
+    if sys.argv[3:]:
+        write_texts(out / "EntryLiveData_ALL_Texts.zip", LIVE_DATA_TEXTS, LIVE_DATA_LANG_TEXTS)
+        print("wrote EntryLiveData_ALL_Texts.zip in", out)
+        return
+    write_texts(out / "EntryAad_ALL_Texts.zip", version=project_version())
     write_images(out / "EntryAad_ALL_Images.zip", res)
     print("wrote EntryAad_ALL_Texts.zip, EntryAad_ALL_Images.zip in", out)
 

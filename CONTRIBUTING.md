@@ -1,8 +1,8 @@
 # Contribuer
 
 *Contributions in English are welcome too. The project documentation is in French (the installation guide and the
-changelog also exist in English); code, comments and commit scopes are in English. Pull requests are squash-merged: the pull request title (Conventional Commits) becomes the
-commit title, in French; an English title is translated at merge time. No need to rebase or reword your commits.*
+changelog also exist in English); code, comments and commit scopes are in English. Pull requests are squash-merged: the
+pull request title (Conventional Commits) becomes the commit title. No need to rebase or reword your commits.*
 
 Merci de votre intérêt ! Le plus utile, par ordre :
 
@@ -62,9 +62,14 @@ fermeture.
 | PC, comme la CI | `make check` | `g++`, `libssl-dev`, `libdbus-1-dev`, `protobuf-compiler`, `python3-protobuf`, clang-format 18.1.8 et ruff 0.6.9 (`pip install -r requirements-dev.txt`) |
 | PC, mémoire et UB | `make test-host-sanitizers` | `g++` avec ASan/UBSan, `libssl-dev` ; tests des trames et de la session, détection des fuites active |
 | ARM | `bash toolchain/tc.sh make -j4 all hmiapp test-arm-all` | Docker, la copie du système de la voiture |
+| ARM SDK, hors publication | `bash toolchain/tc.sh --sdk make -j4 all` puis `python3 tools/verify_sdk.py` | Images Docker `entrynav2-tc:4.7` et `entrynav2-sdk:4.7` ([README](README.md#building-from-source)), `pyelftools`, `readelf` ; pas de copie du système |
 | ARM sous QEMU | `python3 -I tests/run_qemu.py` | `qemu-user`, la copie du système |
 | Programmes validés | `make verify_binary verify_wireless` | idem |
 | Procédure d'installation | les commandes de [docs/INSTALLATION.md](docs/INSTALLATION.md), avec la BusyBox de la voiture sous QEMU | idem |
+
+Les résultats SDK sont isolés dans `artifacts/sdk/` : ils ne passent pas par la publication. Le contrôle ELF ne
+remplace ni le chargement avec les bibliothèques de la voiture ni l'essai en voiture. Si la compilation de référence
+est disponible, `python3 tools/verify_sdk.py --compare-reference` compare aussi leurs contrats ELF.
 
 ## Style
 
@@ -87,12 +92,11 @@ l'iDrive en français. Chaque fichier source commence par :
 
 - Une branche par sujet, partie de `main` : `fix/…`, `feat/…`, `docs/…`.
 - Messages au format [Conventional Commits](https://www.conventionalcommits.org/fr/) : `type(portée): description` en
-  français, à l'impératif ou au constat, 72 caractères au plus. Types : `feat`, `fix`, `refactor`, `perf`, `test`,
+  français ou en anglais, à l'impératif ou au constat, 72 caractères au plus. Types : `feat`, `fix`, `refactor`, `perf`, `test`,
   `docs`, `build`, `ci`, `chore`. Le corps explique pourquoi.
 - Un commit = un changement cohérent qui compile et passe `make check`.
 - Les demandes de fusion entrent dans `main` par squash : un seul commit, au titre de la demande suivi de `(#N)`.
-  Ce titre suit donc les règles ci-dessus (la CI le vérifie) ; un titre en anglais est mis en français à la fusion.
-  Pas besoin de rebaser ni de réécrire ses commits.
+  Ce titre suit donc les règles ci-dessus. Pas besoin de rebaser ni de réécrire ses commits.
 - Les versions suivent [SemVer](https://semver.org/lang/fr/) et sont marquées par une étiquette `vX.Y.Z`.
 
 ## Publier une version

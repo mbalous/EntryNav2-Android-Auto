@@ -69,9 +69,12 @@ public:
     void post(Runnable* runnable, unsigned delayMs);
     void updateModel(unsigned modelId, const TextID& text);
     void updateModel(unsigned modelId, const ImageID& image);
+    void updateModel(unsigned modelId, const wchar_t* text);
     void updateModel(unsigned modelId, bool value);
+    void updateModel(unsigned modelId, int value);
     void setProperty(unsigned componentId, unsigned propertyId, const Parcel& value);
     void cdsAddPropertyChangedEventHandler(BasicString<char>& property, unsigned id, const CdsDelegate& handler);
+    void cdsGetPropertyAsync(BasicString<char>& property, const CdsDelegate& handler);
     bool onInit();
     void onFinalize();
 

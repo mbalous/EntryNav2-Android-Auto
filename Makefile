@@ -92,13 +92,35 @@ aa-supervisor: $(SUPERVISOR_OBJ)
 HMI_SRC = hmiapp/entry_aa_app.cpp hmiapp/bmw_framework.cpp hmiapp/app_log.cpp hmiapp/app_guards.cpp \
           hmiapp/service_link.cpp hmiapp/car_signals.cpp hmiapp/hold_machine.cpp hmiapp/idrive_coding.cpp
 HMI_OBJ = $(HMI_SRC:.cpp=.o)
+LIVE_DATA_OBJ = hmiapp/live_data_app.o hmiapp/bmw_framework.o
 HMI_LIBDIRS = -L$(SYSROOT)/opt/hmi/lib -Wl,-rpath-link,$(SYSROOT)/opt/hmi/lib
 hmiapp: hmiapp/libEntryAad.so
-$(HMI_OBJ): hmiapp/%.o: hmiapp/%.cpp
+$(sort $(HMI_OBJ) $(LIVE_DATA_OBJ)): hmiapp/%.o: hmiapp/%.cpp
 	$(CXX) $(CXXFLAGS) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -MMD -MP -c $< -o $@
 hmiapp/libEntryAad.so: $(HMI_OBJ)
 	$(CXX) $(CXXFLAGS) -fPIC -shared -Wl,-soname,libEntryAad.so $^ -o $@ \
 	    $(HARDEN_LDFLAGS) $(LDSHLIB) $(HMI_LIBDIRS) -l:libAppFramework.A.so -l:libCoreFramework.A.so -lpthread -lrt -ldl
+
+# Reference-firmware prototype only; not included in all or release packages.
+.PHONY: live-data-prototype live-data-texts
+live-data-prototype: hmiapp/libEntryLiveData.so
+live-data-texts: hmiapp/EntryLiveData_ALL_Texts.zip
+hmiapp/libEntryLiveData.so: $(LIVE_DATA_OBJ)
+	$(CXX) $(CXXFLAGS) -fPIC -shared -Wl,-z,defs,-soname,libEntryLiveData.so $^ -o $@ \
+	    $(LDSHLIB) $(HMI_LIBDIRS) -l:libAppFramework.A.so -l:libCoreFramework.A.so -ldl -lrt
+hmiapp/EntryLiveData_ALL_Texts.zip: hmiapp/make_db.py
+	python3 $< hmiapp/res hmiapp --live-data
+
+# SDK-only strict link: the HMI supplies clock_gettime through librt, so resolve it for this throwaway link.
+.PHONY: sdk-link-check
+sdk-link-check: hmiapp/libEntryAad.so
+	$(CXX) $(CXXFLAGS) -fPIC -shared -Wl,-z,defs $(HMI_OBJ) -o hmiapp/sdk-link-check.so \
+	    $(LDSHLIB) $(HMI_LIBDIRS) -l:libAppFramework.A.so -l:libCoreFramework.A.so -lpthread -ldl -lrt
+	arm-linux-gnueabihf-readelf --dyn-syms -W hmiapp/libEntryAad.so | \
+	    awk '$$7 == "UND" && $$5 == "GLOBAL" { sub(/@.*/, "", $$8); print $$8 }' | sort > hmiapp/sdk-imports.txt
+	arm-linux-gnueabihf-readelf --dyn-syms -W hmiapp/sdk-link-check.so | \
+	    awk '$$7 == "UND" && $$5 == "GLOBAL" { sub(/@.*/, "", $$8); print $$8 }' | sort > hmiapp/sdk-checked-imports.txt
+	diff -u hmiapp/sdk-imports.txt hmiapp/sdk-checked-imports.txt
 
 # Read-only diagnostics, run by hand on the car; neither is part of a release.
 dev-tools: evo-check evo-capture
@@ -127,6 +149,7 @@ style:
 	$(RUFF) check .
 	$(SHELLCHECK) -s sh -S style .githooks/pre-push
 	$(SHELLCHECK) -S style toolchain/tc.sh
+	$(SHELLCHECK) -s sh -S style toolchain/make-sdk-stubs.sh
 check: style verify_core verify_repo test-host
 
 # ---- tests on the PC ------------------------------------------------------------------------------------------------
@@ -147,7 +170,8 @@ tests/evo-check-host:
 	    platform/evo_process.cpp $(HOST_DBUS) -o $@
 
 test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture-host test-usb-host \
-           tests/evo-check-host test-media-host test-frame-host test-session-host
+           test-media-host test-frame-host test-session-host
+	python3 tests/test_make_db.py
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_elf.cpp -o tests/test-evo-elf
 	if [ -f "$(SPP_FIXTURE_LIB)" ]; then ENTRY_AAD_FIXTURE_LIB="$(SPP_FIXTURE_LIB)" ./tests/test-evo-elf; else ./tests/test-evo-elf; fi
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_spp_snapshot.cpp platform/evo_spp_snapshot.cpp -o tests/test-spp-snapshot
@@ -495,6 +519,7 @@ test-wireless-lifecycle-arm-build: $(CORE_OBJ) $(LIFECYCLE_OBJ)
 clean:
 	rm -f $(ARM_OBJ) $(ARM_OBJ:.o=.d) $(HMI_OBJ) $(HMI_OBJ:.o=.d) entry-aad aa-supervisor evo-check evo-capture \
 	    hmiapp/libEntryAad.so hmiapp/EntryAad_ALL_Texts.zip hmiapp/EntryAad_ALL_Images.zip \
+	    hmiapp/live_data_app.o hmiapp/live_data_app.d hmiapp/libEntryLiveData.so hmiapp/EntryLiveData_ALL_Texts.zip \
 	    tests/test-* tests/evo-check-host tests/*.so
 
--include $(ARM_OBJ:.o=.d) $(HMI_OBJ:.o=.d)
+-include $(ARM_OBJ:.o=.d) $(HMI_OBJ:.o=.d) $(LIVE_DATA_OBJ:.o=.d)

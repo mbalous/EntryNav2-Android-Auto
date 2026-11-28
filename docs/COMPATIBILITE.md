@@ -16,7 +16,7 @@ rapports de leurs propriétaires : elles disent ce qu'ils ont vu, avec la versio
 
 | Voiture | Logiciel (`/etc/version`) | Écran | Liaison | Dernière version essayée | Ce qui a été vu |
 |---|---|---|---|---|---|
-| G20 de 2019 (référence) | `202111011321` | 1280x480 | sans fil, USB | 0.12.0-rc.12 | celles du [README](../README.fr.md#ce-que-ça-fait), limites dans la [feuille de route](../ROADMAP.md#limites-connues) |
+| G20 de 2019 (référence) | `202111011321` | 1280x480 | sans fil, USB | 0.12.0-rc.12 | celles du [README](../README.md#features), limites dans la [feuille de route](../ROADMAP.md#limites-connues) |
 | G20 de 2019 | `202207190806` | 1280x480 | sans fil | 0.12.0-rc.6 | marche ; lenteur au bout d'une minute avec un Galaxy Z Fold7, disparue en bloquant My BMW ([#44](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/44)) |
 | G21 320d de 2020 | `202402191339` | 1280x480 | sans fil | 0.12.0 | marche, guidage au compteur avec Waze ; lenteur en sans-fil avec un Galaxy S26 Ultra, partie avec une mise à jour d'Android Auto puis revenue ; caméra et vue panorama ouvertes par leur bouton restées sous Android Auto, à l'étude ([#26](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/26)) |
 | G30 | non indiqué (HMI `ID5_2403`, nom du logiciel `W2408C1R`) | non relevé | non indiquée | non indiquée | marche ; pas de son par le câble USB : le son passe par le Bluetooth de la voiture, comme toujours avec ce projet |

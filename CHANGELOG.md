@@ -285,6 +285,10 @@ balise du point d'accès reconstruite une seule fois). Testée sur PC et sous QE
 
 ### Ajouté
 
+- SDK ARM facultatif : compilation des programmes sans copie du système de la voiture, avec des stubs utilisés
+  uniquement pour l'édition de liens. Les résultats restent séparés des versions publiées ; les programmes ont encore
+  besoin des bibliothèques de la voiture pour tourner. Testé sur PC.
+
 - Journaux sans PC ni SSH. Le menu Android Auto de l'iDrive a deux lignes de plus : *Garder les journaux*, qui active
   les journaux (le fichier `maintenance`), et *Copier les journaux sur clé USB*, qui les copie sur une clé USB
   branchée dans la voiture, dans un dossier `EntryAA-logs/<date>`, avec la version du logiciel de l'unité. La ligne
@@ -339,6 +343,8 @@ Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
 
 ### Corrigé
 
+- Son : les demandes de focus audio du téléphone sont décodées comme des messages protobuf, même si leurs champs
+  arrivent dans un autre ordre ou si leur valeur occupe plusieurs octets. Testé sur PC.
 - Sans-fil : à l'arrêt, le Bluetooth pouvait ne pas être rendu quand le téléphone cherchait encore la voiture, et
   les Démarrer suivants étaient alors refusés en moins d'une seconde. Tant que l'enregistrement Android Auto reste
   sur son emplacement Bluetooth, le téléphone peut s'y reconnecter avant que le superviseur, qui regardait
@@ -371,6 +377,8 @@ Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
   est à l'écran, le service le note une fois et met fin à la séance comme à une coupure : le téléphone revient sur un
   décodeur neuf (sans fil : son lien Bluetooth est fermé pour repartir ; USB : il est redemandé). Les images suivantes
   n'attendent plus 20 ms chacune un tampon qui ne viendra pas. Testé sur PC.
+- Image : une demande de focus de la voiture arrivée avant la mise en place de la vidéo est désormais envoyée dès que
+  la vidéo est prête, au lieu d'attendre un autre événement et de risquer d'écraser un état plus récent. Testé sur PC.
 - Micro de l'Assistant : un micro qui ne donnait plus de son bloquait la lecture, et avec elle l'arrêt d'Android Auto
   (Arrêter ou fin du service). Un micro qui retombait en panne aussitôt réparé était aussi fermé puis rouvert sans
   pause, en boucle, tant que l'Assistant écoutait. Le micro est désormais lu sans blocage, par tranches de 100 ms ;
