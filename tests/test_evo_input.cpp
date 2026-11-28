@@ -417,8 +417,8 @@ int main(int argc, char** argv) {
         evo::PhoneFingers phone;
         CHECK(frame(tr, 200, 100, 1, 0, ev) == 1 && phone.admit(ev[0], true));
         aa::TouchContact two[2] = {{0, 2, 200, 100, 9}, {1, 1, 600, 300, 9}};
-        unsigned char f2[112];
-        aa::buildTouchFrame(f2, two, 2, 0, 12);
+        unsigned char f2[touch_fixture::kFrameBytes];
+        touch_fixture::buildTouchFrame(f2, two, 2, 12);
         CHECK(tr.feed(f2, sizeof(f2), ev, 16) == 1 && !phone.admit(ev[0], false));  // the picture has just left
         const int n = tr.releaseAll(ev, 16);
         CHECK(n == 2 && ev[0].action == 6 && ev[1].action == 1);

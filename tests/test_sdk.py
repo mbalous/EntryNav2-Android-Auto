@@ -42,6 +42,11 @@ class SdkContractTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "DT_NEEDED"):
             check_contract("aa-supervisor", needed, (), set(), set(), {})
 
+    def test_plugin_requires_realtime_library(self):
+        self.needed.remove("librt.so.1")
+        with self.assertRaisesRegex(SystemExit, "DT_NEEDED"):
+            self.check()
+
     def test_rejects_unexpected_dependency(self):
         self.needed.add("libunexpected.so")
         with self.assertRaisesRegex(SystemExit, "DT_NEEDED"):
