@@ -7,6 +7,7 @@
 #include <linux/filter.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -55,6 +56,29 @@ bool parseIpv4Udp(const uint8_t* p, size_t n, UdpView& out) {
 
 bool isTouchPdu(const uint8_t* b, size_t n) {
     return n >= 4 && b[0] == 0xB0 && b[1] == 0x04 && b[2] == 0x80 && b[3] == 0x02;
+}
+
+bool isWifiInterface(const char* name) {
+    return name && (strncmp(name, "wlan", 4) == 0 || strncmp(name, "p2p", 3) == 0);
+}
+
+TouchSource::Verdict TouchSource::judge(int ifindex, bool wired, const UdpView& u) {
+    if (known() && ifindex != ifindex_) {
+        return kTwin;
+    }
+    if (!isTouchPdu(u.data, u.len)) {
+        return kOther;
+    }
+    if (!known()) {
+        if (!wired || ifindex <= 0) {
+            return kUntrusted;
+        }
+        ifindex_ = ifindex;
+        ip_ = u.src;
+        port_ = u.sport;
+        return kTouch;
+    }
+    return u.src == ip_ && u.sport == port_ ? kTouch : kOtherSender;
 }
 
 static int clampi(double v, int lo, int hi) {
@@ -274,10 +298,6 @@ EvoTouch::EvoTouch()
       pictureStarted_(true),
       tap_(-1),
       steal_(-1),
-      ifindex_(0),
-      peerIp_(0),
-      peerPort_(0),
-      havePeer_(false),
       stealRefused_(false),
       lastFrameMs_(0),
       tracker_(1.0, 1.0, 0.0, 0.0, 1279, 719),
@@ -298,6 +318,12 @@ static std::string ipText(uint32_t ip) {
     char b[24];
     snprintf(b, sizeof(b), "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255);
     return b;
+}
+
+// The interface's name, "?" when it has none (gone, or never had one).
+static std::string interfaceName(int ifindex) {
+    char name[IF_NAMESIZE];
+    return ifindex > 0 && if_indextoname(static_cast<unsigned>(ifindex), name) ? std::string(name) : std::string("?");
 }
 
 bool EvoTouch::openTap() {
@@ -384,7 +410,7 @@ void EvoTouch::summary() const {
          "summary: mode=%s datagrams_copied=%u touch_frames=%u others=%u events=%u sent_to_aa=%u "
          "received_by_our_socket=%u sender=%s:%u socket_refused=%u",
          inputModeName(mode_), tapped_, touchPdus_, otherPdus_, events_, sent_, stolen_,
-         havePeer_ ? ipText(peerIp_).c_str() : "?", peerPort_, stealRefused_ ? 1 : 0);
+         source_.known() ? ipText(source_.ip()).c_str() : "?", source_.port(), stealRefused_ ? 1 : 0);
 }
 
 void* EvoTouch::threadMain(void* self) {
@@ -425,18 +451,18 @@ void EvoTouch::updateSteal(bool want) {
     sockaddr_in p;
     memset(&p, 0, sizeof(p));
     p.sin_family = AF_INET;
-    p.sin_addr.s_addr = htonl(peerIp_);
-    p.sin_port = htons(peerPort_);
+    p.sin_addr.s_addr = htonl(source_.ip());
+    p.sin_port = htons(source_.port());
     if (connect(s, reinterpret_cast<sockaddr*>(&p), sizeof(p)) != 0) {
-        ELOG("Touch", "connection to the sender %s:%u refused (%s): copy only", ipText(peerIp_).c_str(), peerPort_,
-             strerror(errno));
+        ELOG("Touch", "connection to the sender %s:%u refused (%s): copy only", ipText(source_.ip()).c_str(),
+             source_.port(), strerror(errno));
         close(s);
         stealRefused_ = true;
         return;
     }
     steal_ = s;
     ELOG("Touch", "UDP %u connected to the sender %s:%u while the AA picture shows: touches go to AA only", kTouchPort,
-         ipText(peerIp_).c_str(), peerPort_);
+         ipText(source_.ip()).c_str(), source_.port());
 }
 
 void EvoTouch::emit(const aa::TouchEventOut* ev, int n) {
@@ -463,31 +489,42 @@ void EvoTouch::emit(const aa::TouchEventOut* ev, int n) {
     }
 }
 
-void EvoTouch::handle(const UdpView& u, uint32_t now) {
+void EvoTouch::handle(const UdpView& u, int ifindex, uint32_t now) {
     if (u.dport != kTouchPort) {
         return;
     }
-    if (!isTouchPdu(u.data, u.len)) {
-        if (++otherPdus_ <= 10) {
-            unsigned id = u.len >= 4
-                              ? (static_cast<unsigned>(u.data[0]) << 24 | static_cast<unsigned>(u.data[1]) << 16 |
-                                 static_cast<unsigned>(u.data[2]) << 8 | u.data[3])
-                              : 0;
-            ELOG("Touch", "other PDU 0x%08X (%u B) from %s:%u (left to iDrive)", id, (unsigned)u.len,
-                 ipText(u.src).c_str(), u.sport);
-        }
-        return;
+    const bool knew = source_.known();
+    // The interface's name is looked at only for a touch frame that could fix the touchscreen.
+    const std::string name = !knew && isTouchPdu(u.data, u.len) ? interfaceName(ifindex) : std::string();
+    switch (source_.judge(ifindex, !name.empty() && name != "?" && !isWifiInterface(name.c_str()), u)) {
+        case TouchSource::kTwin:
+            return;  // the same datagram seen on a bridge/VLAN twin, or not the touchscreen's interface
+        case TouchSource::kOther:
+            if (++otherPdus_ <= 10) {
+                unsigned id = u.len >= 4
+                                  ? (static_cast<unsigned>(u.data[0]) << 24 | static_cast<unsigned>(u.data[1]) << 16 |
+                                     static_cast<unsigned>(u.data[2]) << 8 | u.data[3])
+                                  : 0;
+                ELOG("Touch", "other PDU 0x%08X (%u B) from %s:%u (left to iDrive)", id, (unsigned)u.len,
+                     ipText(u.src).c_str(), u.sport);
+            }
+            return;
+        case TouchSource::kUntrusted:
+            if (++otherPdus_ <= 10) {
+                ELOG("Touch", "touch frame from %s:%u on %s ignored: not a wired interface", ipText(u.src).c_str(),
+                     u.sport, name.c_str());
+            }
+            return;
+        case TouchSource::kOtherSender:
+            if (++otherPdus_ <= 10) {
+                ELOG("Touch", "touch frame from another sender %s:%u ignored", ipText(u.src).c_str(), u.sport);
+            }
+            return;
+        case TouchSource::kTouch:
+            break;
     }
-    if (!havePeer_) {
-        havePeer_ = true;
-        peerIp_ = u.src;
-        peerPort_ = u.sport;
-        ELOG("Touch", "touch sender: %s:%u", ipText(peerIp_).c_str(), peerPort_);
-    } else if (u.src != peerIp_ || u.sport != peerPort_) {
-        if (++otherPdus_ <= 10) {
-            ELOG("Touch", "touch frame from another sender %s:%u ignored", ipText(u.src).c_str(), u.sport);
-        }
-        return;
+    if (!knew) {
+        ELOG("Touch", "touch sender: %s:%u on %s", ipText(source_.ip()).c_str(), source_.port(), name.c_str());
     }
     ++touchPdus_;
     lastFrameMs_ = now;
@@ -518,24 +555,23 @@ void EvoTouch::run() {
     while (running_) {
         const bool own = owned_;
         if (mode_ == INPUT_FORWARD) {
-            updateSteal(own && havePeer_);
+            updateSteal(own && source_.known());
         }
         if (mode_ == INPUT_FORWARD && !own && tracker_.activeCount()) {
             // The picture left with a finger down: the phone gets the lift its press was promised, iDrive nothing.
             aa::TouchEventOut ev[aa::kTouchMaxContacts];
-            int n = tracker_.releaseAll(ev, aa::kTouchMaxContacts);
-            const bool fingerSent = phone_.any();
+            const int n = tracker_.releaseAll(ev, aa::kTouchMaxContacts);
+            const int lifts = phoneLifts(phone_, n);
             for (int i = 0; i < n; ++i) {
                 ++events_;
-                if (fingerSent && cb_) {
+                if (i < lifts && cb_) {
                     cb_(ev[i], user_);
                     ++sent_;
                 }
             }
-            if (n && fingerSent) {
-                ELOG("Touch", "picture gone with a finger down: %d release(s) sent to AA", n);
+            if (lifts) {
+                ELOG("Touch", "picture gone with a finger down: %d release(s) sent to AA", lifts);
             }
-            phone_.clear();
         }
         struct pollfd p[2];
         int np = 0;
@@ -568,18 +604,15 @@ void EvoTouch::run() {
                 if (ll.sll_pkttype != PACKET_HOST) {
                     continue;
                 }
-                if (!ifindex_) {
-                    ifindex_ = ll.sll_ifindex;
-                }
-                if (ll.sll_ifindex != ifindex_) {
-                    continue;  // the same datagram seen on a bridge/VLAN twin
-                }
                 UdpView u;
                 if (!parseIpv4Udp(buf, static_cast<size_t>(got), u)) {
                     continue;
                 }
+                if (source_.known() && ll.sll_ifindex != source_.ifindex()) {
+                    continue;  // the same datagram seen on a bridge/VLAN twin, or not the touchscreen's interface
+                }
                 ++tapped_;
-                handle(u, now);
+                handle(u, ll.sll_ifindex, now);
             }
         }
         if (np > 1 && (p[1].revents & POLLIN)) {
@@ -595,6 +628,19 @@ void EvoTouch::run() {
             int n = tracker_.releaseAll(ev, aa::kTouchMaxContacts);
             ELOG("Touch", "no frame for 400 ms: %d finger(s) released", n);
             emit(ev, n);
+        }
+    }
+    if (mode_ == INPUT_FORWARD && tracker_.activeCount()) {
+        // Stopped with a finger down: the same lifts as when the picture leaves.
+        aa::TouchEventOut ev[aa::kTouchMaxContacts];
+        const int n = tracker_.releaseAll(ev, aa::kTouchMaxContacts);
+        const int lifts = phoneLifts(phone_, n);
+        for (int i = 0; i < n; ++i) {
+            ++events_;
+            if (i < lifts && cb_) {
+                cb_(ev[i], user_);
+                ++sent_;
+            }
         }
     }
 }

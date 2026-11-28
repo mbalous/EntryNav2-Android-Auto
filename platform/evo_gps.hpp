@@ -5,6 +5,7 @@
 // Record layouts as this car's libgnsssv.so.1.0.0 writes them. Read-only: no registration, semaphore or network write.
 #ifndef ENTRY_AAD_PLATFORM_EVO_GPS_HPP
 #define ENTRY_AAD_PLATFORM_EVO_GPS_HPP
+#include <errno.h>
 #include <fcntl.h>
 #include <math.h>
 #include <stdlib.h>
@@ -45,7 +46,22 @@ inline bool gpsLayout(size_t n) {
 }
 inline bool carGpsPresent() {
     struct stat s;
-    return !phoneGpsChosen() && stat(carGpsSource(), &s) == 0 && gpsLayout(s.st_size);
+    return !phoneGpsChosen() && stat(carGpsSource(), &s) == 0 && S_ISREG(s.st_mode) &&
+           gpsLayout(static_cast<size_t>(s.st_size));
+}
+inline bool preadFull(int fd, uint8_t* dst, size_t len) {
+    size_t done = 0;
+    while (done < len) {
+        const ssize_t n = pread(fd, dst + done, len - done, static_cast<off_t>(done));
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            return false;
+        }
+        done += static_cast<size_t>(n);
+    }
+    return true;
 }
 // Android Auto 17.9 stops using the speed of the car's fixes for the rest of the session once one says 70 m/s or more
 // (found in its location code by Supra-iDrive6-Android-Auto, c2ad815). Every speed sent stays below it, once rounded
@@ -200,6 +216,7 @@ inline void gpsDerive(const aa::CarLocation& prev, aa::CarLocation& cur) {
 }
 class CarGpsReader {
     std::vector<uint8_t> previous_;
+    std::vector<uint8_t> bufA_, bufB_;
     aa::CarLocation latest_;
     uint64_t lastPoll_;
     size_t layout_;
@@ -217,24 +234,24 @@ public:
         }
         if (!lastPoll_ || now - lastPoll_ >= 100) {  // the main loop's pace: a 1 Hz fix is seen within ~100 ms
             lastPoll_ = now;
-            int fd = open(carGpsSource(), O_RDONLY | O_CLOEXEC);
+            int fd = open(carGpsSource(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
             struct stat s;
-            bool ok = fd >= 0 && fstat(fd, &s) == 0 && gpsLayout(s.st_size);
-            std::vector<uint8_t> a, b;
+            bool ok = fd >= 0 && fstat(fd, &s) == 0 && S_ISREG(s.st_mode) && gpsLayout(static_cast<size_t>(s.st_size));
             if (ok) {
-                a.resize(s.st_size);
-                b.resize(s.st_size);
-                ok = pread(fd, &a[0], a.size(), 0) == static_cast<ssize_t>(a.size()) &&
-                     pread(fd, &b[0], b.size(), 0) == static_cast<ssize_t>(b.size());
+                const size_t sz = static_cast<size_t>(s.st_size);
+                bufA_.resize(sz);
+                bufB_.resize(sz);
+                ok = preadFull(fd, &bufA_[0], sz) && preadFull(fd, &bufB_[0], sz);
             }
             if (fd >= 0) {
                 close(fd);
             }
             if (ok) {
-                const std::vector<uint8_t> ra = gpsRecord(&a[0], a.size()), rb = gpsRecord(&b[0], b.size());
+                const std::vector<uint8_t> ra = gpsRecord(&bufA_[0], bufA_.size()),
+                                           rb = gpsRecord(&bufB_[0], bufB_.size());
                 // Consistent double read; no fresh timestamp for cached data or the first observation.
-                if (gpsU32(&a[0]) == gpsU32(&b[0]) && ra == rb && !rb.empty()) {
-                    if (layout_ == b.size() && !previous_.empty() && rb != previous_) {
+                if (gpsU32(&bufA_[0]) == gpsU32(&bufB_[0]) && ra == rb && !rb.empty()) {
+                    if (layout_ == bufB_.size() && !previous_.empty() && rb != previous_) {
                         const aa::CarLocation before = latest_;
                         latest_ = decodeGpsRecord(rb, now);
                         if (latest_.valid) {
@@ -246,11 +263,11 @@ public:
                             latest_.utcSeconds = t > 1600000000 ? static_cast<uint64_t>(t) : 0;
                         }
                     }
-                    if (layout_ != b.size()) {
+                    if (layout_ != bufB_.size()) {
                         latest_ = aa::CarLocation();
                     }
                     previous_ = rb;
-                    layout_ = b.size();
+                    layout_ = bufB_.size();
                 }
             } else {
                 previous_.clear();

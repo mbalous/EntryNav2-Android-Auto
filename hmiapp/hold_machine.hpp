@@ -23,6 +23,9 @@
 //   state under it a second later, closes it and sends "show". Should iDrive refuse even that, Android Auto
 //   is on screen without the hold: the touchscreen is the phone's, the knob also reaches the iDrive screen
 //   underneath, and our menu is asked for once a second until it opens (event 52 then).
+// - Our own popup is never left open for anything else: closed as soon as the blank state shows or has the focus, our
+//   menu has the focus, Android Auto is asked to the front, a call or the camera comes up (opened again once they are
+//   gone), and never taken for an iDrive popup over the blank state.
 // - A service that did not wait (an older one) shows Android Auto by itself: the same events, then the same
 //   asking without the hold.
 // - BACK or tilt to our menu: event 52 at once (at most every 300 ms), and at each poll while the menu keeps the focus;
@@ -35,11 +38,21 @@
 //   event 52 every two polls without focus.
 // - Hard key (MENU, MEDIA, NAV, COM, MAP, OPTION): iDrive left the blank state. Confirmed on a second poll within 3 s,
 //   Android Auto steps aside ("hide"), the way MENU leaves native CarPlay; the Android Auto entry brings it back.
+// - iDrive's FM station page (screen 523) instead, with no key left to iDrive in the last 6 s (the service's file):
+//   iDrive raised it by itself, the tuner following the station to another frequency (#138, X1 F48 once moving, up to
+//   about 20 times a drive). Event 52 at the first poll, no step aside; at most 4 times in 10 s, past that the hard
+//   key step aside above. Only that screen, seen in a car's log: any other iDrive screen without a key (a warning,
+//   BMW navigation) still makes Android Auto step aside.
 // - NAV, MEDIA or COM opened an Android Auto app, or BACK / tilt left went to it (the service wrote its app key file
 //   within the last 2 s): iDrive switched to its own screen underneath, or went back to the one NAV / MEDIA / COM
 //   opened, event 52 at once so the knob does not act on that hidden screen.
 // - Android Auto steps aside by itself (exit icon, signal lost) over the blank state: event 50 (iDrive main menu), or
 //   event 51 when OPTION opened iDrive's option panel over it. Nothing in reverse or after a hard key.
+// - iDrive ignores that event 51 for as long as its option panel is open (seen on a MINI F54, the same software as the
+//   BMWs, #137): BACK, tilt left or a touch at the left edge then close the panel and give the focus back to the blank
+//   state, with nothing on it. Android Auto is asked to the front at that moment ("show"), as when iDrive goes back to
+//   the blank state by itself; event 51 instead if the session is gone meanwhile. Our menu taking the focus (event 51
+//   performed) or a choice in the panel (the blank state hidden) cancels it. Not during a call or in reverse.
 // - Open row, but Android Auto never came up (session dropped): after 3 s on the blank state, event 51 (menu back).
 // - iDrive back on the blank state by itself while Android Auto is minimized (BACK walks its history): "show", like
 //   CarPlay.
@@ -61,6 +74,8 @@
 #ifndef ENTRY_AAD_HMIAPP_HOLD_MACHINE_HPP
 #define ENTRY_AAD_HMIAPP_HOLD_MACHINE_HPP
 
+#include <stdint.h>
+
 #include "popup_peek.hpp"
 #include "service_state.hpp"
 
@@ -71,6 +86,11 @@ const int kReverseGear = 2;      // driving.gear
 const int kGearUnknown = -1000;  // no driving.gear value received yet
 const int kParkAssistOn = 1;     // sensors.PDCStatus
 const int kPdcUnknown = -1000;   // no sensors.PDCStatus value received yet
+const int kScreenUnknown = -1;   // hmi.graphicalContext: no screen since the blank state last showed
+// hmi.graphicalContext visibleContext of iDrive's FM station page (LT_Button_Ent_Radio_StationEntry), the one iDrive
+// raises by itself when the tuner follows the station (#138, X1 F48; the same number on NBT Evo). Its saved stations
+// page (1325 on NBT Evo) has not been seen on EntryNav2.
+const int kRadioStationScreen = 523;
 
 // What the machine does and reads: the app (iDrive, the service's control port, files, app.log), a recorder in tests.
 class HoldIo {
@@ -83,8 +103,11 @@ public:
     // and the app key file the service writes when NAV / MEDIA / COM opened an Android Auto app, or BACK / tilt left
     // went to it.
     virtual ServiceState readService() = 0;
-    virtual bool appKeyAge(long* seconds) = 0;  // how long ago the file was written; false: no app key file
+    // How long ago the file was written, from its date: negative when the car's date moved back since, an age the
+    // machine then takes as unknown, not recent. False: no app key file.
+    virtual bool appKeyAge(long* seconds) = 0;
     virtual void removeAppKey() = 0;
+    virtual bool hardKeyAge(long* seconds) = 0;  // the same for the file of the last key left to iDrive
 
 protected:
     // Never deleted through this interface: no virtual destructor, so the app's instance has nothing to run at exit
@@ -101,6 +124,9 @@ public:
     static const int kCallEndS = 10;         // a call that ended this recently takes iDrive back to the blank state
     static const int kCameraWaitS = 15;      // fall back if iDrive never restores focus to our blank state
     static const long kMenuRefireMs = 300;   // our menu's focus fires event 52 at most this often
+    static const int kHardKeyS = 6;          // a key left to iDrive this recently explains iDrive's radio page
+    static const int kRadioBacksMax = 4;     // radio pages won back per window; past that, the hard key step aside
+    static const int kRadioWindowS = 10;
 
     explicit HoldMachine(HoldIo& io);
 
@@ -110,15 +136,16 @@ public:
     bool gearChanged(int gear, long now);
     void pdcChanged(int status);      // sensors.PDCStatus
     void driveModeChanged(long now);  // a real change between two valid driving modes
+    void screenChanged(int screen);   // hmi.graphicalContext visibleContext, the iDrive screen shown
 
     // ---- the app's own requests ----
     void showAndHold(const char* why, long now);  // Open row, entry button: Android Auto to the front, blank at once
     void requestShow();  // Android Auto to the front; the overlay that follows is new and held at the next poll
 
     // ---- iDrive's focus on the app's states ----
-    void aaFocus(bool focused);                                          // the blank state
-    void aaVisible(bool visible, long now);                              // the blank state
-    void menuFocus(unsigned state, bool focused, long now, long nowMs);  // the menu or Help; nowMs: milliseconds
+    void aaFocus(bool focused);                                             // the blank state
+    void aaVisible(bool visible, long now);                                 // the blank state
+    void menuFocus(unsigned state, bool focused, long now, int64_t nowMs);  // the menu or Help; nowMs: milliseconds
 
     // ---- the status poll, every second, with the service's state just read ----
     // First: tells a (re)started service, or one whose phone just connected, the call and the gear.
@@ -139,8 +166,12 @@ public:
 private:
     void fireHold(const char* why, long now);
     void holdViaMenu(const char* why, long now);
+    void closeOwnPopup();
+    void dropOwnPopup();
     bool appKeyRecent();
     bool keepForAppKey(const char* why, long now);
+    bool winBackRadioPage(long now);
+    void backFromOptionPanel();
     void flushGear(const char* why);
     void leaveParkAssist(const char* why);
     void updatePopupPeek(bool covered, long now);
@@ -170,7 +201,8 @@ private:
     bool popupTried_;     // our own popup was opened for it since the blank state last showed
     int unfocusedPolls_;  // polls with the blank state shown but unfocused
     long leftSeen_;       // first poll that saw iDrive away from the blank state (hard key), 0: none
-    long menuHoldMs_;     // last event 52 fired by our menu's focus
+    int64_t menuHoldMs_;  // last event 52 fired by our menu's focus
+    bool optionPanel_;    // Android Auto stepped aside for iDrive's option panel: its event 51 may have been ignored
 
     // Android Auto aside until iDrive opens our menu
     bool waiting_;
@@ -191,9 +223,12 @@ private:
     int pdc_;             // sensors.PDCStatus, kPdcUnknown before the first value
     bool parkDismissed_;  // the driver chose Android Auto during this park assist
     long driveModeAt_;    // last driving mode change, 0: none
+    int screen_;          // iDrive screen reported since the blank state last showed, kScreenUnknown: none
+    int radioBacks_;      // radio pages won back since radioSince_
+    long radioSince_;     // first radio page won back in the current window, 0: none
 
     // The service, as told about the car
-    bool serviceReachable_;
+    int servicePid_;
     char prevState_[24];
 };
 

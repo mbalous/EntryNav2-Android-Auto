@@ -94,6 +94,7 @@ int main() {
 
     g_quit = true;
     pthread_join(t, 0);
+    evo::kombi::closeBmwGuidance();
     puts("PASS BMW guidance probe (exact names, boolean reply, unknown on anything else)");
     return 0;
 }

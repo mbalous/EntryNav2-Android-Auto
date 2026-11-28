@@ -35,6 +35,7 @@ Le service ne lit aucun réglage dans son environnement : ses valeurs sont fixes
 | `autostart` | Présent : Android Auto démarre avec l'iDrive (case *Démarrage automatique* du menu) |
 | `entry-direct` | Présent : la ligne *Android Auto* de l'iDrive ouvre directement Android Auto, au lieu de son menu |
 | `kombi-off` | Présent : rien n'est envoyé au compteur ni à la tête haute (Ethernet des Série G ou MOST des Série F) |
+| `kombi-most-layout` | Écrit par le service sur une Série F au compteur MOST : l'adresse du compteur et les champs que la navigation BMW y utilise, appris pendant un guidage ([compatibilité](COMPATIBILITE.md#flèches-sur-le-compteur-des-série-f)). Supprimé, il est appris de nouveau au prochain guidage BMW ; abîmé, il est ignoré puis réécrit |
 | `kombi-single-maneuver` | Présent au démarrage : graphe limité à la prochaine manœuvre, pour un compteur qui refuse le trajet complet (voir ci-dessous). Sans ce fichier : graphe historique |
 | `gps-telephone` | Présent : le téléphone garde son propre GPS, celui de la voiture n'est pas transmis |
 | `maintenance` | Présent : l'appli et le service gardent leurs journaux (case *Garder les journaux* du menu, voir [Journaux](#journaux)) |
@@ -130,23 +131,24 @@ Journaux activés, le service écrit une ligne `[WifiLink]` quand le téléphone
 les 10 secondes jusqu'à la fin de la session :
 
 ```text
-[WifiLink] 5180 MHz; signal -52 dBm (average -51); from the phone 135.0 Mbit/s;
-in 10 s: 812 frames sent, 35 retried, 0 lost; on the Wi-Fi for 135 s; TCP round trip 4.2 ms, 0 segment(s) sent again;
+[WifiLink] 2462 MHz; signal -52 dBm (average -51); from the phone 65.0 Mbit/s;
+in 10 s: 812 frames sent, 0 lost; on the Wi-Fi for 135 s; TCP round trip 4.2 ms, 0 segment(s) sent again;
 BMW Apps Bluetooth link idle
 ```
 
 | Partie | Sens |
 |---|---|
-| `5180 MHz` | Fréquence du Wi-Fi de la voiture : vers 2400, la bande 2,4 GHz, partagée avec le Bluetooth ; vers 5000, la bande 5 GHz |
+| `2462 MHz` | Fréquence du Wi-Fi de la voiture : 2462 MHz est le canal 11 de la bande 2,4 GHz, partagée avec le Bluetooth. Le point d'accès des EntryNav2 n'a que cette bande (`hw_mode=g`, une antenne 2,4 GHz) |
 | `signal` | Niveau reçu du téléphone, et sa moyenne. Plus le nombre est bas, plus la liaison est fragile (-50 : bon, -80 : faible). Quand la puce n'a pas mesuré la dernière trame, seule la moyenne est écrite (`average signal`) |
 | `from the phone` | Débit radio choisi par le téléphone. Le débit vers le téléphone n'est pas écrit : la puce Wi-Fi le choisit seule et le pilote ne le connaît pas |
-| `frames sent, retried, lost` | Trames envoyées au téléphone depuis la ligne précédente, réémises, puis abandonnées |
+| `frames sent, lost` | Trames envoyées au téléphone depuis la ligne précédente, puis abandonnées (jamais acquittées). Le nombre de trames réémises n'est pas écrit : le pilote de la puce Wi-Fi des EntryNav2 compte un seul envoi par trame, ce nombre valait toujours 0 |
 | `on the Wi-Fi for` | Temps depuis que le téléphone a rejoint le Wi-Fi. S'il repart de zéro, le téléphone l'a quitté puis rejoint |
 | `TCP round trip`, `sent again` | Temps d'aller-retour de la connexion Android Auto, et morceaux qu'il a fallu renvoyer |
+| `chip firmware restarted` | Le pilote a redémarré le micrologiciel de la puce Wi-Fi (transmission bloquée, chien de garde) depuis la ligne précédente, ou depuis le démarrage de l'unité sur la première ligne. Lu dans l'état du pilote (`driver_state` dans debugfs), sans rien demander à la puce. Absent quand il n'y en a pas eu |
 | `BMW Apps Bluetooth link` | Lien Bluetooth des BMW Apps (My BMW, AAIdrive, option *Apps* du téléphone dans les réglages de la voiture) : `connected` quand un téléphone le tient, `idle` sinon ; un autre état est écrit en chiffres (`slot state`, `link state`). Il passe par la même puce que le Wi-Fi |
 
 Une partie que le Wi-Fi de la voiture ne donne pas est absente de la ligne. Ces chiffres sont lus dans le noyau, comme
-le fait la commande `iw` : rien n'est réglé ni envoyé, et l'adresse du téléphone n'est pas écrite. L'état du lien BMW
+le fait la commande `iw` : rien n'est réglé, et l'adresse du téléphone n'est pas écrite. Les statistiques de la puce Wi-Fi elle-même (`fw_stats` dans debugfs) ne sont pas lues : le pilote les demande à la puce, et sur une X1 F48 deux lectures à 5 s d'écart ont été suivies de deux redémarrages de son micrologiciel ([#256](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/256)). Ne les lisez pas non plus à la main. L'état du lien BMW
 Apps est lu dans la mémoire de la pile Bluetooth BMW, comme au démarrage, sans rien y changer ; il manque quand Android
 Auto occupe lui-même l'emplacement des BMW Apps (`takes SPP 0` dans le journal du superviseur). Par câble USB, il n'y a
 pas de ligne `[WifiLink]`.
@@ -156,10 +158,12 @@ U-APSD, une économie d'énergie du téléphone, et écrit une ligne `car access
 
 | Fin de la ligne | Sens |
 |---|---|
-| `beacon rebuilt` | Fait : le téléphone rejoint le Wi-Fi sans U-APSD |
-| `beacon already rebuilt for this hostapd start` | Déjà fait depuis le dernier démarrage du point d'accès : le réglage seul, sans reconstruire la balise une seconde fois |
-| `a station is associated` | Un appareil était déjà sur le Wi-Fi de la voiture (téléphone revenu, iPhone en CarPlay) : personne n'est déconnecté, et cet appareil garde U-APSD jusqu'à sa prochaine connexion |
-| `RELOAD refused` | hostapd a pris le réglage mais pas la reconstruction de sa balise : le téléphone peut encore demander U-APSD |
+| `beacon rebuilt: the phone joins without it` | Fait : le téléphone rejoint le Wi-Fi sans U-APSD |
+| `disconnected once and joins again without it` | Fait : un appareil était déjà sur le Wi-Fi de la voiture (téléphone qui l'a rejoint tout seul, téléphone revenu, ordinateur, iPhone en CarPlay) ; il est déconnecté une fois et le rejoint aussitôt sans U-APSD |
+| `beacon already rebuilt for this hostapd start` | Déjà fait depuis le dernier démarrage du point d'accès, même par un service arrêté puis relancé depuis : le réglage seul, sans reconstruire la balise une seconde fois |
+| `beacon left, nobody disconnected` | Un appareil était déjà sur le Wi-Fi, mais le démarrage du point d'accès n'a pas pu être reconnu : personne n'est déconnecté (sinon ce serait à chaque échange), et cet appareil garde U-APSD jusqu'à sa prochaine connexion |
+| `RELOAD refused` | hostapd a pris le réglage mais refusé de reconstruire sa balise, sans déconnecter personne : le téléphone peut encore demander U-APSD ; redemandé au prochain échange |
+| `RELOAD not answered` | hostapd n'a pas répondu à temps : la balise a pu être reconstruite ; pas redemandé avant le prochain démarrage du point d'accès, pour ne pas déconnecter le téléphone à chaque échange |
 | `left on` | hostapd a refusé le réglage ou n'a pas répondu : rien n'a changé |
 
 Le réglage est fait dans la mémoire de hostapd, jamais dans un fichier de la voiture : un redémarrage de l'unité, ou
@@ -191,14 +195,27 @@ cd /var/local/data/AA && rm -f maintenance app.log app.old.log service.log servi
 
 ## Garde-fou
 
-Si l'iDrive redémarre trois fois de suite moins de 2 minutes après avoir chargé l'appli, celle-ci ne se lance plus et
-l'iDrive repart sans elle : le fichier `/var/local/data/AA/app-guard` compte ces démarrages, et s'efface tout seul après
-2 minutes sans incident. Le fichier `app.disable`, posé à la main, garde aussi l'appli éteinte. Pour la réactiver, après
-avoir trouvé la cause :
+Si l'iDrive redémarre trois fois en 15 minutes, chaque fois moins de 2 minutes après avoir chargé l'appli, celle-ci ne
+se lance plus et l'iDrive repart sans elle : le fichier `/var/local/data/AA/app-guard` compte ces démarrages, et
+s'efface tout seul après 2 minutes sans incident. Seuls ceux des 15 dernières minutes comptent : l'appli se relance
+d'elle-même à un démarrage de l'iDrive 15 minutes plus tard (et si la cause est toujours là, l'iDrive peut redémarrer
+encore trois fois). Le fichier `app.disable`, posé à la main, garde l'appli éteinte. Pour la réactiver tout de suite,
+après avoir trouvé la cause :
 
 ```sh
 rm -f /var/local/data/AA/app.disable /var/local/data/AA/app-guard
 reboot
+```
+
+## Redémarrer l'unité (essai)
+
+Voiture à l'arrêt, `aa-supervisor --reboot` redémarre l'unité comme après une mise à jour par clé USB : redémarrage
+propre demandé au processeur de l'unité (Cortex-M4), comme un outil de diagnostic BMW, sinon le redémarrage d'avant
+(`/sbin/reboot`, environ 3 minutes d'écran noir) ; refusé pendant une mise à jour ou après une mise à jour coupée
+(`update-pending`). C'est un essai, jamais fait en voiture : ce qu'il fait s'affiche à chaque étape.
+
+```sh
+LD_LIBRARY_PATH=/usr/local/lib:/opt/hmi/lib:/usr/lib:/lib /opt/aa/aa-supervisor --reboot
 ```
 
 ## État de l'installation

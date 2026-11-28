@@ -70,6 +70,8 @@ Arrows::Arrows(const ArrowsConfig& config)
       sessionEnded_(false),
       quit_(false),
       started_(false),
+      inboxRevision_(0),
+      guiding_(false),
       enabled_(false),
       settingCheckedAt_(-1e9),
       offUntilNextSession_(false),
@@ -77,6 +79,7 @@ Arrows::Arrows(const ArrowsConfig& config)
       linkFailures_(0),
       marked_(false),
       most_(nullptr),
+      mostOwns_(false),
       bmwGuiding_(false),
       watching_(false) {
     pthread_mutex_init(&mu_, nullptr);
@@ -262,12 +265,21 @@ void Arrows::tick(double now) {
         return;
     }
 
+    // The messages are copied and read again only when one came in, not on every tick.
     pthread_mutex_lock(&mu_);
-    const NavInbox inbox = inbox_;
+    const bool newMessages = inbox_.revision() != inboxRevision_;
+    NavInbox inbox;
+    if (newMessages) {
+        inbox = inbox_;
+        inboxRevision_ = inbox_.revision();
+    }
     const double lastMessageAt = lastMessageAt_;
     const bool ended = sessionEnded_;
     sessionEnded_ = false;
     pthread_mutex_unlock(&mu_);
+    if (newMessages) {
+        guiding_ = inbox.guiding() && inbox.nextManeuver(next_);
+    }
 
     if (ended) {
         if (guide_.showing() || guide_.sentAny()) {
@@ -278,6 +290,16 @@ void Arrows::tick(double now) {
         retryAt_ = 0;
         linkFailures_ = 0;
         markArrow(guide_.showing() || guide_.sentAny());
+        return;
+    }
+    // An F-series car: the cluster is on MOST, nobody answers at the Ethernet KOMBI's address (a try waits seconds).
+    if (!mostOwns_ && most_ && most_->fieldsReady() && !guide_.showing() && !guide_.sentAny()) {
+        mostOwns_ = true;
+        ELOG(kTag,
+             "the cluster's guidance fields answered over MOST: the Ethernet KOMBI %s is not tried again this run",
+             config_.clusterAddress.c_str());
+    }
+    if (mostOwns_) {
         return;
     }
     if (offUntilNextSession_ || now < retryAt_) {
@@ -291,14 +313,13 @@ void Arrows::tick(double now) {
         markArrow(false, true);
         return;
     }
-    Maneuver next;
     const Maneuver* shown = nullptr;
     const char* why = "guidance ended";
-    if (inbox.guiding() && inbox.nextManeuver(next)) {
+    if (guiding_) {
         if (now - lastMessageAt > config_.guide.staleS) {
             why = "navigation status frozen";
         } else {
-            shown = &next;
+            shown = &next_;
         }
     }
     guide_.step(shown, now, why);
@@ -321,8 +342,9 @@ void Arrows::tick(double now) {
                  config_.clusterAddress.c_str(), static_cast<unsigned>(config_.clusterPort), linkFailures_);
             offUntilNextSession_ = true;
         } else {
+            // From the end of the send: it may have waited seconds for the connection (now is the tick's start).
             ELOG(kTag, "KOMBI link failed: retrying in %.0f s", kRetryLinkS);
-            retryAt_ = now + kRetryLinkS;
+            retryAt_ = upSec() + kRetryLinkS;
         }
     }
     markArrow(guide_.showing() || guide_.sentAny());

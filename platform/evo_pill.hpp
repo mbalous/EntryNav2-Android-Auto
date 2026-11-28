@@ -40,7 +40,7 @@ private:
     struct Wayland;
     static void* threadMain(void* self);
     void run();
-    void wake();
+    void wakeLocked();
 
     pthread_t thread_;
     mutable pthread_mutex_t mu_;

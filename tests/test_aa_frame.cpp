@@ -29,6 +29,12 @@ aa::FrameHeader header(uint8_t channel, uint8_t position, uint16_t length, uint3
     return h;
 }
 
+// The same header, its frame not encrypted.
+aa::FrameHeader inClear(aa::FrameHeader h) {
+    h.flags = static_cast<uint8_t>(h.flags & ~aa::frame::kEncrypted);
+    return h;
+}
+
 void headers() {
     const uint8_t first[] = {0x06, 0x09, 0x12, 0x34, 0x00, 0x01, 0x02, 0x03};
     const aa::FrameHeader h = aa::decodeFrameHeader(first);
@@ -173,6 +179,67 @@ void lostMessages() {
     a.lose(header(6, aa::frame::kWhole, 30));
     CHECK(a.add(header(6, aa::frame::kLast, 30), Bytes({2}), m) == aa::MessageAssembler::kComplete);
     CHECK(m == Bytes({1, 2}));
+
+    // A fragment in clear after an encrypted FIRST, or encrypted after a FIRST in clear, is no part of that message:
+    // dropped, the rest of it skipped up to its LAST. A message all in clear is rebuilt as before.
+    CHECK(a.add(header(6, aa::frame::kFirst, 30, 2), Bytes({1}), m) == aa::MessageAssembler::kPending);
+    CHECK(a.add(inClear(header(6, aa::frame::kLast, 30)), Bytes({2}), m) == aa::MessageAssembler::kMixed);
+    CHECK(a.add(header(6, aa::frame::kLast, 30), Bytes({3}), m) == aa::MessageAssembler::kNoFirst);
+    CHECK(a.add(inClear(header(6, aa::frame::kFirst, 30, 3)), Bytes({1}), m) == aa::MessageAssembler::kPending);
+    CHECK(a.add(header(6, aa::frame::kMiddle, 30), Bytes({2}), m) == aa::MessageAssembler::kMixed);
+    CHECK(a.add(inClear(header(6, aa::frame::kLast, 30)), Bytes({3}), m) == aa::MessageAssembler::kRestOfLost);
+    CHECK(a.add(inClear(header(6, aa::frame::kFirst, 30, 2)), Bytes({4}), m) == aa::MessageAssembler::kPending);
+    CHECK(a.add(inClear(header(6, aa::frame::kLast, 30)), Bytes({5}), m) == aa::MessageAssembler::kComplete);
+    CHECK(m == Bytes({4, 5}));
+}
+
+// Every channel together keeps at most frame::kMaxPending bytes: a message that would pass it is dropped and the rest
+// of it skipped, and what completed or was dropped no longer counts. A FIRST that announces more than a message may
+// hold is dropped at once.
+void globalBound() {
+    typedef aa::MessageAssembler A;
+    const size_t mib = 1024 * 1024;
+    const Bytes four(4 * mib, 1), two(2 * mib, 2);
+    A a;
+    Bytes m;
+    CHECK(aa::frame::kMaxPending == 12 * mib);
+    CHECK(a.add(header(6, aa::frame::kFirst, 1), four, m) == A::kPending);
+    CHECK(a.add(header(6, aa::frame::kMiddle, 1), two, m) == A::kPending);
+    CHECK(a.add(header(8, aa::frame::kFirst, 1), four, m) == A::kPending);
+    CHECK(a.add(header(8, aa::frame::kMiddle, 1), two, m) == A::kPending);
+    CHECK(a.heldBytes() == 12 * mib);
+    // A third channel finds no room: its message is dropped, the rest of it skipped.
+    CHECK(a.add(header(2, aa::frame::kFirst, 1), Bytes(1, 3), m) == A::kOverflow);
+    CHECK(a.add(header(2, aa::frame::kLast, 1), Bytes(1, 3), m) == A::kRestOfLost);
+    // Nor more on a channel already there: that message is dropped, its bytes freed.
+    CHECK(a.add(header(8, aa::frame::kMiddle, 1), Bytes(1, 3), m) == A::kOverflow);
+    CHECK(a.heldBytes() == 6 * mib);
+    CHECK(a.add(header(8, aa::frame::kLast, 1), Bytes(1, 3), m) == A::kRestOfLost);
+    // The room freed serves again, a replacing FIRST frees the message it replaces, a message that completes frees
+    // its bytes.
+    CHECK(a.add(header(2, aa::frame::kFirst, 1), four, m) == A::kPending);
+    CHECK(a.add(header(2, aa::frame::kFirst, 1), four, m) == A::kPending);
+    CHECK(a.heldBytes() == 10 * mib);
+    CHECK(a.add(header(6, aa::frame::kLast, 1), Bytes(1, 7), m) == A::kComplete);
+    CHECK(m.size() == 6 * mib + 1 && m.back() == 7);
+    CHECK(a.heldBytes() == 4 * mib);
+    // Announced past the bound of one message: dropped at its FIRST, nothing of it kept, the rest skipped.
+    CHECK(a.add(header(8, aa::frame::kFirst, 1, aa::frame::kMaxMessage + 1), Bytes(1, 3), m) == A::kOverflow);
+    CHECK(a.heldBytes() == 4 * mib);
+    CHECK(a.add(header(8, aa::frame::kMiddle, 1), Bytes(1, 3), m) == A::kRestOfLost);
+    CHECK(a.add(header(8, aa::frame::kLast, 1), Bytes(1, 3), m) == A::kRestOfLost);
+    CHECK(a.add(header(8, aa::frame::kFirst, 1, aa::frame::kMaxMessage), Bytes(1, 3), m) == A::kPending);
+    a.clear();
+    CHECK(a.heldBytes() == 0);
+
+    // Pre-TLS bound: 64 KiB across all channels before the handshake finishes.
+    a.setMaxPending(aa::frame::kMaxPreTlsPending);
+    CHECK(a.add(header(6, aa::frame::kFirst, 1, aa::frame::kMaxPreTlsPending + 1), Bytes(1, 1), m) == A::kOverflow);
+    CHECK(a.add(header(6, aa::frame::kLast, 1), Bytes(1, 1), m) == A::kRestOfLost);
+    CHECK(a.add(header(0, aa::frame::kFirst, 1, 4096), Bytes(32 * 1024, 2), m) == A::kPending);
+    CHECK(a.add(header(1, aa::frame::kFirst, 1, 4096), Bytes(32 * 1024 + 1, 3), m) == A::kOverflow);
+    a.clear();
+    a.setMaxPending(aa::frame::kMaxPending);
 }
 
 }  // namespace
@@ -183,5 +250,7 @@ int main() {
     puts("PASS frames: header both ways, 64 KiB limit, reassembly per channel, orphan fragments, size checks");
     lostMessages();
     puts("PASS frames: a message lost to an unreadable fragment is skipped up to its LAST, whole frames pass");
+    globalBound();
+    puts("PASS frames: 12 MiB kept at most for every channel together, a FIRST announcing past 8 MiB dropped at once");
     return 0;
 }

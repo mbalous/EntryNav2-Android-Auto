@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // The phone listener on loopback: one session at a time, the hotspot's /24 only, the accepted socket's options.
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -88,6 +89,8 @@ int main() {
         CHECK(option(g_handed, IPPROTO_TCP, TCP_KEEPCNT) == 3);
         // What the car sends goes in the Wi-Fi video category, as its CarPlay marks its screen stream.
         CHECK(option(g_handed, IPPROTO_IP, IP_TOS) == 0x80);
+        // Accepted socket is close-on-exec so children never inherit the phone connection.
+        CHECK((fcntl(g_handed, F_GETFD) & FD_CLOEXEC) != 0);
         // One session at a time, until the session says it ended.
         CHECK(turnedAway(dial(port)) && g_calls == 1);
         server.notifySessionEnded();
@@ -104,15 +107,24 @@ int main() {
         CHECK(dial(port) < 0);
     }
     {
-        // A hotspot address this machine does not have: listening on every interface, but loopback is not its /24.
+        // A hotspot address this machine does not have: with IP_FREEBIND, loopback is not bound at all; without it,
+        // fallback listens on every interface and turns loopback away. Either way loopback cannot reach the callback.
         aa::TcpServer server(static_cast<uint16_t>(port + 1));
         server.setHotspotAddress("10.255.255.1");
         server.setConnectionCallback(onPhone, nullptr);
         CHECK(server.start());
-        CHECK(turnedAway(dial(static_cast<uint16_t>(port + 1))) && g_calls == 2);
+        const int fd = dial(static_cast<uint16_t>(port + 1));
+        CHECK((fd < 0 || turnedAway(fd)) && g_calls == 2);
     }
     {
-        // No hotspot: no filter. No callback: the connection is closed.
+        // An invalid non-empty hotspot address must fail closed rather than accept every interface.
+        aa::TcpServer bad(static_cast<uint16_t>(port + 4));
+        bad.setHotspotAddress("not-an-ip");
+        bad.setConnectionCallback(onPhone, nullptr);
+        CHECK(!bad.start());
+    }
+    {
+        // No hotspot: no filter. No callback: the connection is closed and busy_ is not wedged.
         aa::TcpServer open(static_cast<uint16_t>(port + 2));
         open.setConnectionCallback(onPhone, nullptr);
         CHECK(open.start());
@@ -123,6 +135,11 @@ int main() {
         aa::TcpServer silent(static_cast<uint16_t>(port + 3));
         CHECK(silent.start());
         CHECK(turnedAway(dial(static_cast<uint16_t>(port + 3))) && g_calls == 3);
+        silent.setConnectionCallback(onPhone, nullptr);
+        const int after = dial(static_cast<uint16_t>(port + 3));
+        CHECK(after >= 0 && handedOver(4));
+        close(after);
+        close(g_handed);
     }
     puts("PASS phone listener: one session at a time, hotspot /24 only, socket options, start and stop twice");
     return 0;

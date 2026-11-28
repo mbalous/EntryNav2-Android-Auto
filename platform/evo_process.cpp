@@ -13,6 +13,7 @@
 #include <csignal>
 
 #include "evo_log.hpp"
+#include "fd_hygiene.hpp"
 extern char** environ;
 
 namespace evo {
@@ -37,7 +38,7 @@ bool runCommand(const std::string& executable, const std::vector<std::string>& a
         }
         return false;
     }
-    if (fcntl(fds[0], F_SETFL, O_NONBLOCK) < 0) {
+    if (!ensureFdAboveStdio(fds[0]) || !ensureFdAboveStdio(fds[1]) || fcntl(fds[0], F_SETFL, O_NONBLOCK) < 0) {
         if (diagnostic) {
             diagnostic->spawnError = errno;
         }
@@ -61,14 +62,34 @@ bool runCommand(const std::string& executable, const std::vector<std::string>& a
         close(fds[1]);
         return false;
     }
+    posix_spawnattr_t attr;
+    int attrError = posix_spawnattr_init(&attr);
+    if (attrError != 0) {
+        if (diagnostic) {
+            diagnostic->spawnError = attrError;
+        }
+        posix_spawn_file_actions_destroy(&actions);
+        close(fds[0]);
+        close(fds[1]);
+        return false;
+    }
+    // SIGPIPE back to its default for the child (the service ignores it). The child stays in our process group, so
+    // the supervisor stopping the service stops it too.
+    // Never sigfillset() here: glibc 2.15 rejects uncatchable signals in setsigdefault with exit 127.
+    sigset_t defPipe;
+    sigemptyset(&defPipe);
+    sigaddset(&defPipe, SIGPIPE);
     bool configured = posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO) == 0 &&
                       (!diagnostic || posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO) == 0) &&
                       posix_spawn_file_actions_addclose(&actions, fds[0]) == 0 &&
-                      posix_spawn_file_actions_addclose(&actions, fds[1]) == 0;
+                      posix_spawn_file_actions_addclose(&actions, fds[1]) == 0 &&
+                      posix_spawnattr_setsigdefault(&attr, &defPipe) == 0 &&
+                      posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF) == 0;
     pid_t pid = -1;
-    int rc = configured ? posix_spawnp(&pid, executable.c_str(), &actions, nullptr, &argv[0],
+    int rc = configured ? posix_spawnp(&pid, executable.c_str(), &actions, &attr, &argv[0],
                                        environment ? environment : environ)
                         : EINVAL;
+    posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);
     close(fds[1]);
     if (rc != 0) {

@@ -61,7 +61,7 @@ Le protocole Android Auto côté voiture, sans rien de propre à BMW.
 | `volume_state.hpp` | Ce que montre la pastille, comme la barre de l'iDrive : niveau de l'écran avant, changement ou touche de volume, sourdine par le bouton audio |
 | `evo_knob`, `evo_touch`, `input_mode.hpp` | Entrées : molette, touches, tactile |
 | `media_recall.hpp` | Double appui sur MEDIA : geste, conditions, demande à usage unique lue par l'appli de l'iDrive |
-| `vmost_client` | Accès au bus vMOST de la voiture (molette, touches, Wi-Fi), chargé à l'exécution |
+| `vmost_client` | Accès au bus vMOST de la voiture (molette, touches, Wi-Fi, redémarrage), chargé à l'exécution |
 | `evo_ccs.hpp`, `evo_touch_frame.hpp` | Messages de la molette BMW (deux générations de contrôleur) et trames du tactile |
 | `controller_layout.hpp` | Quelle touche est chaque bouton, selon le codage de la voiture, comme l'iDrive (contrôleur type G ou F) |
 | `car_brand.hpp` | Marque codée dans l'iDrive (BMW ou MINI) : marque annoncée au téléphone, bords de l'écran cachés par le rond des MINI |
@@ -74,9 +74,10 @@ Le protocole Android Auto côté voiture, sans rien de propre à BMW.
 | `log_copy` | Journaux copiés sur une clé USB depuis le menu de l'iDrive (`aa-supervisor --copy-logs`) ; clés USB montées par la voiture |
 | `update_package`, `update_key.hpp` | Archive de mise à jour lue sur la clé USB : lecteur tar borné, liste signée `UPDATE`, versions, empreintes et signature (libcrypto de la voiture), clés publiques du projet |
 | `update_install` | Mise à jour par clé USB (`aa-supervisor --update-check`, `--update-install`) : vérification sans rien écrire, fichiers `.new` relus puis renommés un à un, journal qui termine une mise à jour coupée, rapport ; sur une fausse voiture dans les tests |
-| `update_car.cpp` | La même sur la voiture : `/proc/mounts`, remontage du système comme à l'installation, chargeur de l'unité, redémarrage, verrous |
-| `ap_uapsd.hpp` | Point d'accès de la voiture sans U-APSD pour le téléphone qui le rejoint (réglage en mémoire de hostapd, balise reconstruite seulement sans station connectée) |
-| `wifi_link` | Qualité de la liaison Wi-Fi avec le téléphone, lue dans le noyau pour les journaux, avec l'état du lien Bluetooth des BMW Apps (testé sur PC) |
+| `update_car.cpp` | La même sur la voiture : `/proc/mounts`, remontage du système comme à l'installation, chargeur de l'unité, redémarrage, verrous ; `aa-supervisor --reboot`. Seul fichier qui lance `/sbin/reboot`, jamais dans un test |
+| `evo_reboot` | Redémarrage de l'unité : demandé proprement au processeur de l'unité (Cortex-M4) par vMOST, comme un outil de diagnostic BMW, sinon le redémarrage d'avant (`/sbin/reboot`) ; décisions sur une fausse voiture dans les tests |
+| `ap_uapsd.hpp` | Point d'accès de la voiture sans U-APSD pour le téléphone qui le rejoint (réglage en mémoire de hostapd, balise reconstruite une fois par démarrage du point d'accès, appareils déjà connectés compris) |
+| `wifi_link` | Qualité de la liaison Wi-Fi avec le téléphone, lue dans le noyau pour les journaux : entrée du téléphone (nl80211), redémarrages de la puce WL18xx comptés par son pilote (debugfs, lus sur un fil à part, jamais `fw_stats`), TCP, et l'état du lien Bluetooth des BMW Apps (testé sur PC) |
 | `alps_spp`, `evo_spp_snapshot` | Pile Bluetooth de la voiture : commandes, et lecture de son état en mémoire |
 | `evo_elf.hpp` | Symboles exportés par une bibliothèque de la voiture, lus dans son fichier |
 | `evo_control`, `control_address.hpp` | Commandes de l'appli vers le service, par un socket Unix au nom abstrait (ni fichier ni port réseau) |
@@ -86,6 +87,7 @@ Le protocole Android Auto côté voiture, sans rien de propre à BMW.
 | `kombi_display`, `kombi_graph` | Codes et tables du compteur, dessin des manœuvres et des voies |
 | `kombi_client`, `kombi_someip` | Liaison SOME/IP avec le compteur (service `0xB006`) |
 | `kombi_most` | Prochaine manœuvre sur le compteur des Série F, par MOST (bloc `HUD_Terminal`, `0x82`), par la connexion vMOST du lecteur de molette ; seulement sans compteur Ethernet (testé sur PC) |
+| `kombi_most_layout` | Champs de ce compteur appris en écoutant la navigation BMW pendant un guidage (images, cadre, textes classés sans être gardés), et leur fichier `kombi-most-layout` (testé sur PC) |
 | `evo_bmw_guidance` | Détection de la navigation BMW en cours, qui garde la priorité |
 
 ## `hmiapp/` : l'appli de l'iDrive
@@ -99,10 +101,12 @@ Le protocole Android Auto côté voiture, sans rien de propre à BMW.
 | `hold_machine` | Quand demander la page vide de l'iDrive sous Android Auto (classe pure, testée sur PC) |
 | `pending_restart.hpp` | Redémarrage d'Android Auto quand la case du câble USB change en marche (testé sur PC) |
 | `service_link` | Lancement du superviseur, commandes au service, arrêt, copie des journaux et mise à jour par clé USB |
-| `update_flow.hpp` | Ligne *Mettre à jour par clé USB* : vérification au premier appui, installation au second, arrêt d'Android Auto avant, textes affichés (classe pure, testée sur PC) |
+| `update_flow.hpp` | Ligne *Mettre à jour par clé USB* : vérification au premier appui, installation au second, arrêt d'Android Auto avant (et relance, une fois arrêté, si rien n'a été installé), textes affichés (classe pure, testée sur PC) |
 | `car_signals` | Marche arrière, appels, jour et nuit, mode de conduite, lus dans l'iDrive |
 | `idrive_coding` | Codage de la voiture lu dans l'iDrive au démarrage de l'appli et écrit pour le service : touches du contrôleur, marque (BMW ou MINI) ; réglage de la fenêtre du mode de conduite, lu pour l'appli |
+| `posted_task.hpp` | Tâches différées de l'appli marquées pendant qu'elles tournent : les lectures de l'iDrive (cache par fil de HmiMain3D) y sont refusées, elles arrêteraient son fil (testé sur PC, `tests/test_idrive_lookups.py` garde ces lectures dans `idrive_coding`) |
 | `app_guards` | Interrupteur, garde-fou contre les plantages, démarrage automatique, cases du menu |
+| `guard_file.hpp` | Fichiers des deux garde-fous : seuls les démarrages des 15 dernières minutes comptent, fichier remplacé d'un coup (testé sur PC) |
 | `app_log`, `log_profile.hpp` | Journal de l'appli, profil maintenance |
 | `popup_peek.hpp`, `cds_parse.hpp` | Fenêtres de l'iDrive par-dessus Android Auto, lecture des données de l'iDrive |
 | `mono_clock.hpp` | Temps écoulé depuis le démarrage de l'unité, pour les délais |
@@ -130,12 +134,15 @@ Le protocole Android Auto côté voiture, sans rien de propre à BMW.
 | `tests/test_peek_timing.cpp`, `tests/test_wireless_lifecycle.cpp` | Effacement de l'image, cycle de vie Bluetooth puis Wi-Fi du service |
 | `tests/test_volume_state.cpp` | Pastille du volume : niveau d'une autre source ignoré, répétitions, touches, sourdine |
 | `tests/test_evo_mic.cpp` | Micro de la voiture sur une fausse libasound (`tests/fake_libasound.c`) : son transmis, arrêt immédiat avec un micro muet ou en panne, réouverture espacée |
-| `tests/test_wifi_link.cpp` | Qualité du Wi-Fi : messages du noyau, ligne de journal, connexion rendue en fin de session |
+| `tests/test_wifi_link.cpp` | Qualité du Wi-Fi : messages du noyau, redémarrages de la puce et leur fil de lecture, ligne de journal, connexion rendue en fin de session |
 | `tests/test_pending_restart.cpp` | Redémarrage d'Android Auto quand la case du câble USB change en marche |
+| `tests/test_guard_file.cpp` | Garde-fous : démarrages d'autres jours ignorés, boucle de plantages, date qui recule, ligne coupée, fichier remplacé d'un coup |
 | `tests/test_hold_machine.cpp` | Page vide de l'iDrive : ouverture, démarrage automatique, fenêtres, modes, appels, touches |
 | `tests/test_media_recall.cpp` | Double appui sur MEDIA : geste lu par le vrai décodeur, conditions, demande à usage unique |
 | `tests/test_aa_frame.cpp`, `tests/test_aa_messages.cpp`, `tests/test_tcp_server.cpp` | Trames hostiles, messages construits, écoute TCP |
+| `tests/test_no_inherit.cpp` | Connexions et tubes du service fermés pour les programmes qu'il lance : un programme lancé pendant l'écoute ne garde pas le port |
 | `tests/test_update_package.cpp`, `tests/test_update_release.py` | Archive de mise à jour : versions, archives tar hostiles, liste, signatures, clé du projet ; archive écrite par `package_release.py` relue par le code de la voiture |
 | `tests/test_update_install.cpp`, `tests/test_update_flow.cpp` | Mise à jour par clé USB sur une fausse voiture : vérification qui ne change rien, installation, refus sans changement, coupure de courant après chaque renommage terminée par le journal ; ligne du menu |
+| `tests/test_evo_reboot.cpp` | Redémarrage sur une fausse voiture et une fausse horloge : chaque réponse du processeur de l'unité (acceptée, en attente, refusée, erreur vMOST, aucune, d'un autre testeur) et le délai avant le redémarrage d'avant ; session vMOST sur une fausse bibliothèque ; journal en profil maintenance seulement |
 | `make verify_binary verify_wireless` | Programmes ARM : bibliothèques résolues sur la voiture, empreintes des programmes validés |
 | `tools/verify_repo.py`, `tools/verify_core.py` | Contenu de git : ni mot de passe, ni clé de signature, ni programme compilé, ni fichier BMW ; licence |

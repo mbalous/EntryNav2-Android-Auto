@@ -27,6 +27,8 @@ constexpr char kPhoneGps[] = "/var/local/data/AA/gps-telephone";      // present
 constexpr char kVehicle[] = "/var/local/data/AA/vehicle";             // model= year= side= fuel=, told to the phone
 // An Android Auto picture may still be on the cluster of an F-series car (over MOST, kombi_most.hpp).
 constexpr char kKombiMostShown[] = "/var/local/data/AA/kombi-most.shown";
+// That cluster's address and the fields the BMW navigation uses on it, learned while it guides (kombi_most_layout.hpp).
+constexpr char kKombiMostLayout[] = "/var/local/data/AA/kombi-most-layout";
 // Present: send only the next maneuver's graph to the cluster.
 constexpr char kKombiSingle[] = "/var/local/data/AA/kombi-single-maneuver";
 // Present: Android Auto over a USB cable instead of wireless. Empty, or the one USB port to use ("1-1").
@@ -52,6 +54,7 @@ constexpr char kServiceStop[] = "/tmp/entry-aa-service/STOP";  // created by the
 constexpr char kServiceLog[] = "/tmp/entry-aa-service.log";
 constexpr char kStateFile[] = "/tmp/entry-aad-state";             // "state pid overlay", written by the service
 constexpr char kAppKeyFile[] = "/tmp/entry-aad-appkey";           // NAV/MEDIA/COM/BACK kept Android Auto up
+constexpr char kHardKeyFile[] = "/tmp/entry-aad-hardkey";         // a key left to iDrive: its time is the file's
 constexpr char kDayNightFile[] = "/tmp/entry-aad-daynight";       // day or night, written by the app
 constexpr char kControllerFile[] = "/tmp/entry-aad-controller";   // the car's key coding, written by the app
 constexpr char kBrandFile[] = "/tmp/entry-aad-brand";             // "BMW" or "MINI", as iDrive is coded
@@ -59,6 +62,8 @@ constexpr char kDriverSideFile[] = "/tmp/entry-aad-driver-side";  // "left" or "
 // The car's series as iDrive is coded ("G20"), written by the app; the model told to the phone without one in vehicle.
 constexpr char kSeriesFile[] = "/tmp/entry-aad-series";
 constexpr char kWirelessLock[] = "/tmp/entry-aad-wireless.lock";  // one wireless start at a time
+// "<device> <inode>" of the hostapd control socket whose start had its beacon rebuilt without U-APSD (ap_uapsd.hpp).
+constexpr char kUapsdBeaconFile[] = "/tmp/entry-aad-uapsd-beacon";
 // One-shot double-MEDIA recall request: process id and monotonic timestamp, checked by the iDrive app.
 constexpr char kMediaRecallFile[] = "/tmp/entry-aad-media-recall";
 // One update from a USB stick at a time, the programs it holds for the car's loader to check, and the archive the last

@@ -1,13 +1,19 @@
 <div align="center">
 
+<img src="docs/images/banner.svg" alt="An Android phone sending Android Auto over Bluetooth and Wi-Fi to the wide screen of an EntryNav2 head unit" width="100%">
+
 # EntryNav2 (EntryEvo) Android Auto
 
-**Wireless Android Auto for BMW iDrive on the EntryNav2 head unit.**<br>
-No dongle, no cable needed, no BMW file replaced.
+**Android Auto in BMW iDrive on the EntryNav2 head unit, wireless or over USB.**<br>
+No dongle, no BMW file replaced, and updates from a USB stick.
 
 [![CI](https://github.com/Jiraiya43/EntryNav2-Android-Auto/actions/workflows/ci.yml/badge.svg)](https://github.com/Jiraiya43/EntryNav2-Android-Auto/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Jiraiya43/EntryNav2-Android-Auto?include_prereleases&sort=semver)](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases)
+[![Downloads](https://img.shields.io/github/downloads/Jiraiya43/EntryNav2-Android-Auto/total?color=success)](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases)
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE.md)
+
+[Quick start](#quick-start) · [Compatible cars](#compatible-cars) · [Installation guide](docs/INSTALLATION.en.md) ·
+[FAQ](#faq) · [Changelog](CHANGELOG.en.md)
 
 </div>
 
@@ -19,41 +25,105 @@ No dongle, no cable needed, no BMW file replaced.
 
 ## Features
 
-- **Wireless Android Auto.** The phone pairs over Bluetooth, then joins the car's own Wi-Fi (the one CarPlay uses).
-- **A USB cable works too** (experimental, off by default), for phones without wireless Android Auto: a checkbox in
-  the menu picks the cable or wireless, nothing is guessed. [Setup and limits](docs/USB.md) (in French).
-- **Started from iDrive.** An *Android Auto* entry in the Media menu, with its own menu: start, stop, start
-  automatically, logs, update, help.
-- **Updates without a PC** (from 0.13.0-rc.10). After the first installation over SSH, a new version installs from a
-  USB stick, through the Android Auto menu. Only an archive signed by the project is accepted
-  ([updating](docs/INSTALLATION.md#par-clé-usb-sans-pc), in French).
-- **Original controls.** iDrive controller, hard keys, touch screen, steering wheel buttons, voice button for the
-  Assistant.
-- **Car microphone** for the Google Assistant, **car speakers** over Bluetooth.
-- **Car GPS** sent to the phone, with a fallback to the phone's own GPS.
-- **Turn-by-turn on the head-up display and cluster**: arrow, distance, street name, roundabout exit (G series; F
-  series being tried, [compatibility](docs/COMPATIBILITE.md#flèches-sur-le-compteur-des-série-f)).
-- **Lives alongside iDrive**: reversing camera, volume overlay, driving modes, day and night.
-- **Always reversible.** Bluetooth goes back to iDrive when Android Auto stops, and a guard switches the app off if
-  iDrive crashes several times in a row after loading it.
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**📶 Wireless or USB**<br>
+The phone pairs over Bluetooth, then joins the car's own Wi-Fi, the one CarPlay uses. Phones without wireless Android
+Auto use a USB cable (experimental, off by default): a box in the menu picks the cable or wireless, nothing is
+guessed. [Setup and limits](docs/USB.md) (in French).
+
+</td>
+<td width="50%" valign="top">
+
+**🎛️ The car's own controls**<br>
+iDrive controller, hard keys, touch screen and steering wheel buttons. NAV, MAP, MEDIA and COM open Android Auto's
+apps. The car's microphone serves the Assistant, which starts from Android Auto's microphone button; the steering
+wheel voice button stays with iDrive.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🧭 Guidance in the cluster and head-up display**<br>
+Arrow, distance, street name and roundabout exit on G-series cars; F-series cars are being tried
+([compatibility](docs/COMPATIBILITE.md#flèches-sur-le-compteur-des-série-f)). The car's GPS is sent to the phone, with
+a fallback to the phone's own.
+
+</td>
+<td valign="top">
+
+**🔄 Updates from a USB stick**<br>
+After the first installation over SSH, newer versions install from a USB stick through the Android Auto menu, without
+a PC (from 0.13.0-rc.10). Only an archive signed by the project is accepted
+([updating](docs/INSTALLATION.en.md#from-a-usb-stick-without-a-pc)).
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🚗 Lives alongside iDrive**<br>
+Started from an *Android Auto* entry in the Media menu, with its own menu. Reversing camera, park assist, volume
+overlay, driving modes, phone calls, day and night: iDrive keeps its screens, Android Auto comes back after them.
+
+</td>
+<td valign="top">
+
+**↩️ Always reversible**<br>
+Two folders are added, no BMW file is replaced. Bluetooth goes back to iDrive when Android Auto stops, and a guard
+switches the app off if iDrive crashes several times in a row after loading it.
+
+</td>
+</tr>
+</table>
+
+## Quick start
+
+1. **Check your car.** It needs an EntryNav2 head unit, a 1280×480, 800×480 or 1440×540 screen, and the root
+   password; see [Requirements](#requirements).
+2. **Download** the latest archive from [Releases](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases).
+3. **Install once over SSH**, following the [installation guide](docs/INSTALLATION.en.md). Its step 2 checks the car
+   without writing anything.
+4. **Start**: on iDrive, *Media*, *Android Auto*, *Start Android Auto*, then accept the car on the phone.
+5. **Update later from a USB stick**: copy the new archive onto it, then *Update from USB stick* in the menu.
 
 ## Status
 
 | | |
 |---|---|
-| Latest release | [0.12.0](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/latest), tried in a car (pre-1.0: expect rough edges) |
+| Latest release | [0.12.0](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases/latest), tried in a car (pre-1.0: expect rough edges); newer [pre-releases](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases) are being tried |
 | Tried in a car | the reference car, a 2019 BMW G20 (iDrive software `202111011321`) |
-| Other cars | reported working by their owners: G20, G21, G30, X3 G01, F20, F21, F30, F40, F44, F45, X1 F48, F52 (cable), i3, MINI F54, F56, F57 ([list](docs/COMPATIBILITE.md#voitures-essayées)); a compatibility check is built in |
+| Other cars | about twenty, reported by their owners ([below](#compatible-cars)); a compatibility check is built in |
+| Next | 1.0: the [roadmap](ROADMAP.md) says what is left |
 
 Every change is tested on a PC, and the ARM programs run under QEMU against the car's own libraries. Only a car test
 counts as proof: [CHANGELOG.en.md](CHANGELOG.en.md) says for each version whether it was tried in a car or only tested
 on a PC. The [French changelog](CHANGELOG.md) is the authoritative version.
 
+## Compatible cars
+
+Reported working by their owners, wireless, over USB or both:
+
+| | Models |
+|---|---|
+| **G series** | 3 Series G20 and G21, 5 Series G30, X3 G01 |
+| **F series** | 1 Series F20, F21, F40 and F52; 2 Series F44 and F45; 3 Series F30; X1 F48 |
+| **i and MINI** | i3; MINI Clubman F54, MINI F56 and F57 |
+
+Each car, with its iDrive software, screen, link and the version tried, is in
+[docs/COMPATIBILITE.md](docs/COMPATIBILITE.md#voitures-essayées) (in French). Not listed? The check of the
+installation's step 2 changes nothing on the car, and a
+[compatibility report](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/new/choose) with its result helps
+the most.
+
 ## Requirements
 
-- A BMW with an **EntryNav2** head unit (called *EntryEVO* inside its system), with a **1280×480** or **800×480**
-  screen ([screens](docs/COMPATIBILITE.md#autres-tailles-décran)). Wireless needs the unit's **CarPlay Wi-Fi**;
-  without it, a [USB cable](docs/USB.md) works too.
+- A BMW or MINI with an **EntryNav2** head unit (called *EntryEVO* inside its system), with a **1280×480**, **800×480**
+  or **1440×540** screen ([screens](docs/COMPATIBILITE.md#autres-tailles-décran)). Wireless needs the unit's
+  **CarPlay Wi-Fi**; without it, a [USB cable](docs/USB.md) works too.
   NBT Evo, ID7 and MGU units run other systems: this project cannot run on them.
 - For the first installation, a PC with an SSH client (Windows 10/11, Linux or macOS) and an **ENET cable** (OBD to
   Ethernet). Later updates install from a USB stick.
@@ -63,7 +133,7 @@ on a PC. The [French changelog](CHANGELOG.md) is the authoritative version.
 ## Installing
 
 Installation is a short manual procedure over SSH, described step by step in
-[docs/INSTALLATION.md](docs/INSTALLATION.md) (in French; the commands speak for themselves):
+[docs/INSTALLATION.en.md](docs/INSTALLATION.en.md) ([French](docs/INSTALLATION.md)):
 
 1. Download `entrynav2-android-auto-<version>-armhf.tar` from [Releases](https://github.com/Jiraiya43/EntryNav2-Android-Auto/releases) and check
    its SHA-256.
@@ -72,15 +142,77 @@ Installation is a short manual procedure over SSH, described step by step in
    and `aa-supervisor --compat` rehearses the startup of Android Auto.
 4. **Install**: the system is remounted read-write only while two folders are copied (`/opt/aa` and
    `/opt/hmi/data/ro/Plugins/EntryAad`), then the unit restarts.
-5. On iDrive: *Media*, *Android Auto*, *Démarrer*.
+5. On iDrive: *Media*, *Android Auto*, *Start Android Auto*.
 
-After that, newer versions install without a PC: the archive copied as is onto a USB stick, then *Mettre à jour par
-clé USB* (*Update from USB stick*) in the Android Auto menu. Only an archive signed by the project is accepted,
-everything is checked before anything is written, and an update cut by a power failure is finished by the next one
-([updating](docs/INSTALLATION.md#mettre-à-jour)).
+After that, newer versions install without a PC: the archive copied as is onto a USB stick, then *Update from USB
+stick* in the Android Auto menu. Only an archive signed by the project is accepted, everything is checked before
+anything is written, and an update cut by a power failure is finished by the next one
+([updating](docs/INSTALLATION.en.md#updating)).
 
 Settings and logs live in `/var/local/data/AA` ([docs/MAINTENANCE.md](docs/MAINTENANCE.md)). Uninstalling removes the two
 folders.
+
+## FAQ
+
+<details>
+<summary><b>Does it work on NBT Evo, ID7 or MGU (iDrive 7)?</b></summary>
+
+No. Those head units run other systems, and this project only runs on the EntryNav2 (EntryEVO). For NBT Evo, see
+[Supra-iDrive6-Android-Auto](https://github.com/Sq00ky/Supra-iDrive6-Android-Auto), the project this one started from.
+
+</details>
+
+<details>
+<summary><b>How do I open SSH on my head unit?</b></summary>
+
+The project has no tool for it. Some online services sell the unlock, usually for a small price.
+
+</details>
+
+<details>
+<summary><b>Wireless lags or stutters. What can I do?</b></summary>
+
+Most reports so far came from the phone's side. Update Android Auto and Google Play services first: a stutter on
+Samsung phones with One UI 9 went away with an Android Auto update
+([#26](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/26)). Then compare with the USB cable, and open an
+issue with the logs (see below): the `[WifiLink]` lines show the link's round trip and the phone's silences.
+
+</details>
+
+<details>
+<summary><b>The phone never starts Android Auto wirelessly.</b></summary>
+
+Pair the phone again while Android Auto is running (*Start Android Auto* first): a phone paired while the service was
+not running keeps a list of the car's services without Android Auto
+([#72](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/72)). A VPN or ad blocker on the phone also stopped
+it on one car ([#137](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/137)).
+
+</details>
+
+<details>
+<summary><b>Where does the sound go?</b></summary>
+
+Through the car's Bluetooth audio, like any paired phone: pick the phone's Bluetooth source in iDrive if it does not
+come by itself. Sound over Wi-Fi is not done yet ([roadmap](ROADMAP.md)).
+
+</details>
+
+<details>
+<summary><b>How do I send logs?</b></summary>
+
+In the Android Auto menu, tick *Keep logs*, reproduce the problem, then press *Copy logs to USB stick* and attach the
+archive to an [issue](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/new/choose). Never post a password,
+your VIN, or photos that carry their location.
+
+</details>
+
+<details>
+<summary><b>Does it cost anything?</b></summary>
+
+No. It is free and will stay free; the Help page of its menu says so too. See
+[Supporting the project](#supporting-the-project) if you want to give something back.
+
+</details>
 
 ## How it works
 
@@ -95,7 +227,7 @@ flowchart LR
     end
     P -- Bluetooth: Wi-Fi credentials --> S
     P -- Wi-Fi: encrypted Android Auto --> S
-    S -- SOME/IP: guidance --> K[Cluster and HUD]
+    S -- SOME/IP or MOST: guidance --> K[Cluster and HUD]
 ```
 
 1. The iDrive app starts the supervisor, which borrows a Bluetooth slot and switches the car's Wi-Fi on.
@@ -147,14 +279,15 @@ hmiapp/      the iDrive app loaded by HmiMain3D
 tools/       supervisor, release packaging and checks
 tests/       PC tests and ARM tests under QEMU
 toolchain/   Docker image of the cross compiler
-docs/        documentation (French)
+docs/        documentation (French; the installation guide also in English)
 ```
 
 ## Contributing
 
 Bug reports, compatibility reports from other cars and pull requests are welcome: see
 [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md). A compatibility report (the check of
-step 3) changes nothing on the car and helps the most. Security issues: see [SECURITY.md](SECURITY.md).
+the installation's step 2) changes nothing on the car and helps the most. Security issues: see
+[SECURITY.md](SECURITY.md).
 
 ## Supporting the project
 
@@ -165,7 +298,8 @@ to my G20 and offering open-source apps for iDrive 7.
 ## Credits
 
 This project started as a port of [Supra-iDrive6-Android-Auto](https://github.com/Sq00ky/Supra-iDrive6-Android-Auto) by
-Sq00ky, then was reworked and extended for the EntryNav2. Thanks to Sq00ky for that work.
+Sq00ky, then was reworked and extended for the EntryNav2. Thanks to Sq00ky for that work, and to everyone who tried it
+in their car, reported back or sent a pull request.
 
 ## Licence and disclaimer
 

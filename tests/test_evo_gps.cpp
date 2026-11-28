@@ -16,7 +16,9 @@ static void put32(std::vector<uint8_t>& b, size_t at, uint32_t v) {
 static void save(const char* path, const std::vector<uint8_t>& b) {
     FILE* f = fopen(path, "wb");
     assert(f);
-    assert(fwrite(&b[0], 1, b.size(), f) == b.size());
+    if (!b.empty()) {
+        assert(fwrite(b.data(), 1, b.size(), f) == b.size());
+    }
     assert(fclose(f) == 0);
 }
 

@@ -1179,7 +1179,7 @@ void coreSection(Golden& out) {
     {
         CoreRun r(out, "every maneuver type");
         for (int type = 0; type <= 50; ++type) {
-            char road[16];
+            char road[32];
             snprintf(road, sizeof(road), "TYPE %d", type);
             Step s(type, road);
             r.tick(type, guiding(s, positionMessage(400, "0.2", 5)));

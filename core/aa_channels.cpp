@@ -102,8 +102,7 @@ bool AASession::onControl(uint16_t id, const Message& message) {
             onVersion(message);
             break;
         case msg::kTlsHandshake:
-            onTlsHandshake(message);
-            break;
+            return onTlsHandshake(message);
         case msg::kDiscoveryRequest:
             onDiscovery();
             break;
@@ -136,11 +135,17 @@ bool AASession::onControl(uint16_t id, const Message& message) {
     return true;
 }
 
-// The phone answered our version request: TLS starts, the head unit speaking first.
+// The phone answered our version request: TLS starts, the head unit speaking first. Once per session: another answer
+// would start TLS again, under the phone's own handshake or its established session.
 void AASession::onVersion(const Message& message) {
     if (message.size() < 8) {
         return;
     }
+    if (versionTaken_) {
+        printf("[AASession] another VersionResponse from the phone: ignored, TLS goes on\n");
+        return;
+    }
+    versionTaken_ = true;
     printf("[AASession] >>> VersionResponse: Major=%u, Minor=%u, Status=%u\n", (message[2] << 8) | message[3],
            (message[4] << 8) | message[5], (message[6] << 8) | message[7]);
     std::vector<uint8_t> hello;
@@ -150,10 +155,17 @@ void AASession::onVersion(const Message& message) {
     }
 }
 
-void AASession::onTlsHandshake(const Message& message) {
+// False when the handshake failed for good: nothing can be sealed or decrypted any more, the session ends.
+bool AASession::onTlsHandshake(const Message& message) {
     if (message.size() < kMessageIdSize + 1) {
         printf("[AASession] Ignoring empty SSL handshake message.\n");
-        return;
+        return true;
+    }
+    if (tls_.established()) {
+        // Its bytes would wait in front of the next encrypted frame and break TLS there; AuthComplete went already.
+        printf("[AASession] SSL handshake message after TLS was established (%u bytes): ignored\n",
+               static_cast<unsigned>(bodySize(message)));
+        return true;
     }
     printf("[AASession] >>> Received SSL Handshake from phone (%u bytes)\n", static_cast<unsigned>(bodySize(message)));
     std::vector<uint8_t> answer;
@@ -162,12 +174,18 @@ void AASession::onTlsHandshake(const Message& message) {
         sendPlain(channel::kControl, message::tlsHandshake(answer));
         printf("[AASession] Sent TLS Handshake response (%u bytes).\n", static_cast<unsigned>(answer.size()));
     }
+    if (tls_.broken()) {
+        printf("[AASession] TLS handshake failed: session ends.\n");
+        return false;
+    }
     if (tls_.established()) {
-        // AuthComplete goes in clear, as every head unit sends it.
+        // Full reassembly bound now that the peer finished TLS; AuthComplete goes in clear, as every head unit sends.
+        assembler_.setMaxPending(frame::kMaxPending);
         printf("[AASession] >>> TLS Handshake Complete! Sending AuthCompleteNotification...\n");
         sendPlain(channel::kControl, message::authComplete());
         printf("[AASession] >>> Awaiting ServiceDiscoveryRequest from phone...\n");
     }
+    return true;
 }
 
 // The description of this car: Google's Desktop Head Unit template, adapted by core/sdr_builder.cpp.
@@ -269,7 +287,7 @@ void AASession::onSetup(uint8_t channel) {
 void AASession::onStart(uint8_t channel, const Message& message) {
     const uint32_t session = bodyField(message, 1);
     if (session != kNoField) {
-        mediaSessions_[channel & 31] = session;
+        mediaSessions_[channel] = session;
     }
     printf("[AASession] >>> AV START_INDICATION on Channel %u (session %u)\n", channel,
            session == kNoField ? 0u : session);
@@ -318,7 +336,7 @@ void AASession::onMedia(uint8_t channel, uint16_t id, const Message& message) {
             g_trail.stage = kTrailHandler;
         }
     }
-    sendSealed(channel, message::mediaAck(mediaSessions_[channel & 31]));
+    sendSealed(channel, message::mediaAck(mediaSessions_[channel]));
 }
 
 // A message the phone sent on one of its streams, but lost on the way (a fragment that did not decrypt, a reassembly
@@ -330,7 +348,7 @@ void AASession::ackDropped(const FrameHeader& header) {
     if (header.position() != frame::kLast || !channel::isMediaSink(header.channel)) {
         return;
     }
-    const bool sent = sendSealed(header.channel, message::mediaAck(mediaSessions_[header.channel & 31]));
+    const bool sent = sendSealed(header.channel, message::mediaAck(mediaSessions_[header.channel]));
     printf("[AASession] media message lost on the way, acked on channel %u %s\n", header.channel,
            sent ? "sent" : "SEND FAILED");
 }

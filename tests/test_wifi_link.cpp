@@ -10,8 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -87,7 +89,8 @@ void stationMessages() {
     const evo::WifiStation s = station(5000, 300, 2, 125);
     CHECK(!memcmp(s.mac, kPhone, sizeof(kPhone)));
     CHECK(s.signalDbm == -52 && s.signalAvgDbm == -51 && s.rxRate == 1350);
-    CHECK(s.txFrames == 5000 && s.txRetries == 300 && s.txFailed == 2 && s.connectedS == 125);
+    // The retry count the driver gives (always 0 on the WL18xx) is not kept.
+    CHECK(s.txFrames == 5000 && s.txFailed == 2 && s.connectedS == 125);
 
     // A driver that gives little: what is missing stays "no figure".
     Attrs info;
@@ -161,19 +164,18 @@ void logLines() {
     const evo::WifiSample first = sample(1000, 5000, 300, 2, 125, 4250, 3);
     CHECK(evo::describeWifiLink(first, nullptr) ==
           "5180 MHz; signal -52 dBm (average -51); from the phone 135.0 Mbit/s; "
-          "since it joined: 5000 frames sent, 300 retried, 2 lost; on the Wi-Fi for 125 s; "
+          "since it joined: 5000 frames sent, 2 lost; on the Wi-Fi for 125 s; "
           "TCP round trip 4.2 ms, 3 segment(s) sent again since it opened");
     // Ten seconds later: what happened in between.
     const evo::WifiSample second = sample(11040, 5812, 335, 2, 135, 38900, 9);
     CHECK(evo::describeWifiLink(second, &first) ==
           "5180 MHz; signal -52 dBm (average -51); from the phone 135.0 Mbit/s; "
-          "in 10 s: 812 frames sent, 35 retried, 0 lost; on the Wi-Fi for 135 s; "
+          "in 10 s: 812 frames sent, 0 lost; on the Wi-Fi for 135 s; "
           "TCP round trip 38.9 ms, 6 segment(s) sent again");
     // The phone left the Wi-Fi and came back: its counters started again, nothing is subtracted.
     const evo::WifiSample back = sample(21000, 40, 1, 0, 3, 4000, 9);
     const std::string again = evo::describeWifiLink(back, &second);
-    CHECK(again.find("the phone joined the Wi-Fi again; since it joined: 40 frames sent, 1 retried, 0 lost") !=
-          std::string::npos);
+    CHECK(again.find("the phone joined the Wi-Fi again; since it joined: 40 frames sent, 0 lost") != std::string::npos);
     CHECK(again.find("on the Wi-Fi for 3 s") != std::string::npos);
     // Another phone's entry is never subtracted from either.
     evo::WifiSample other = sample(31000, 9000, 900, 9, 600, 4000, 9);
@@ -196,7 +198,7 @@ void logLines() {
     CHECK(evo::describeWifiLink(evo::WifiSample(), nullptr).empty());
     // A driver without counters: no "frames" part at all.
     evo::WifiSample bare = first;
-    bare.station.txFrames = bare.station.txRetries = bare.station.txFailed = bare.station.connectedS = evo::kNoFigure;
+    bare.station.txFrames = bare.station.txFailed = bare.station.connectedS = evo::kNoFigure;
     bare.station.signalAvgDbm = bare.station.rxRate = evo::kNoFigure;
     bare.hasTcp = false;
     CHECK(evo::describeWifiLink(bare, nullptr) == "5180 MHz; signal -52 dBm");
@@ -223,6 +225,124 @@ void logLines() {
     appsAlone.apps.read = true;
     appsAlone.apps.state = 1;
     CHECK(evo::describeWifiLink(appsAlone, nullptr) == "BMW Apps Bluetooth link idle");
+}
+
+evo::ChipCounters chip(int64_t recoveries) {
+    evo::ChipCounters c;
+    c.recoveries = recoveries;
+    return c;
+}
+
+// The WL18xx driver's count of firmware restarts: its driver_state file, and its part of the line, after TCP and
+// before BMW Apps.
+void chipCounters() {
+    int64_t value = -1;
+    CHECK(evo::parseChipCounter("1234\n", value) && value == 1234);
+    CHECK(evo::parseChipCounter(" 0 ", value) && value == 0);
+    CHECK(!evo::parseChipCounter("", value) && !evo::parseChipCounter("\n", value));
+    CHECK(!evo::parseChipCounter("12a\n", value) && !evo::parseChipCounter("-3\n", value));
+    CHECK(!evo::parseChipCounter("1 2\n", value) && !evo::parseChipCounter("99999999999999999999\n", value));
+    // driver_state as wlcore writes it: one "name = value" per line.
+    const std::string state = "tx_blocks_available = 23\nchip.id = 0x1030000\nrecovery_count = 4\nrole_id = 1\n";
+    CHECK(evo::parseRecoveryCount(state, value) && value == 4);
+    CHECK(!evo::parseRecoveryCount("tx_blocks_available = 23\n", value));
+    CHECK(!evo::parseRecoveryCount("recovery_count = many\n", value));
+    CHECK(!evo::parseRecoveryCount("recovery_count_old = 2\n", value));
+    // No such interface: nothing read, no counter given.
+    evo::ChipCounters none = chip(1);
+    CHECK(!evo::readChipCounters("entry-aad-no-such-interface", none) && none.recoveries == evo::kNoFigure);
+
+    const std::string tcpLine = "TCP round trip 0.9 ms, 0 segment(s) sent again since it opened";
+    evo::WifiSample first;
+    first.atMs = 1000;
+    first.hasTcp = true;
+    first.tcp.roundTripUs = 950;
+    first.tcp.resent = 0;
+    first.hasChip = true;
+    first.chip = chip(0);
+    // No restart: nothing written about the chip.
+    CHECK(evo::describeWifiLink(first, nullptr) == tcpLine);
+    // Ten seconds later, one restart in between: written, before BMW Apps.
+    evo::WifiSample second = first;
+    second.atMs = 11000;
+    second.chip = chip(1);
+    second.apps.read = true;
+    second.apps.state = 1;
+    CHECK(evo::describeWifiLink(second, &first) ==
+          "TCP round trip 0.9 ms, 0 segment(s) sent again; chip firmware restarted 1 time(s); BMW Apps Bluetooth "
+          "link idle");
+    // None since: nothing.
+    evo::WifiSample third = second;
+    third.atMs = 21000;
+    CHECK(evo::describeWifiLink(third, &second).find("restarted") == std::string::npos);
+    // Restarts before the first line: written once, with their total.
+    evo::WifiSample restarted = first;
+    restarted.chip = chip(2);
+    CHECK(evo::describeWifiLink(restarted, nullptr) ==
+          tcpLine + "; chip firmware restarted 2 time(s) since the unit started");
+    // The line before had no count (not read): the total again, as on a first line.
+    evo::WifiSample unread = first;
+    unread.hasChip = false;
+    CHECK(evo::describeWifiLink(restarted, &unread).find("2 time(s) since the unit started") != std::string::npos);
+    // Nothing read: no chip part at all.
+    CHECK(evo::describeWifiLink(unread, nullptr) == tcpLine);
+}
+
+// Fake reads for the reader thread, which counts them.
+std::atomic<unsigned> chipReads(0);
+bool fastChipRead(const std::string& interface, evo::ChipCounters& out) {
+    CHECK(interface == "wlan0");
+    ++chipReads;
+    out = chip(3);
+    return true;
+}
+bool failingChipRead(const std::string&, evo::ChipCounters&) {
+    ++chipReads;
+    return false;
+}
+bool slowChipRead(const std::string&, evo::ChipCounters& out) {
+    ++chipReads;
+    usleep(1500000);  // the driver's lock held by a stuck firmware command, longer than its 2 s timeout here
+    out = chip(5);
+    return true;
+}
+
+uint32_t elapsedMs(const timespec& since) {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<uint32_t>((now.tv_sec - since.tv_sec) * 1000 + (now.tv_nsec - since.tv_nsec) / 1000000);
+}
+
+// The main loop waits for the chip's counters no longer than it asks; a read still under way is never asked again.
+void chipReader() {
+    {
+        // Waits of a few seconds: a new thread under QEMU and load may take a while to run.
+        evo::ChipCounterReader reader(fastChipRead);
+        evo::ChipCounters c;
+        CHECK(reader.ask("wlan0", 3000000, c) && c.recoveries == 3);
+        CHECK(reader.ask("wlan0", 3000000, c) && chipReads == 2);
+    }
+    {
+        evo::ChipCounterReader reader(failingChipRead);
+        evo::ChipCounters c;
+        CHECK(!reader.ask("wlan0", 3000000, c));
+    }
+    {
+        chipReads = 0;
+        evo::ChipCounterReader reader(slowChipRead);
+        evo::ChipCounters c;
+        timespec start;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        CHECK(!reader.ask("wlan0", 100000, c));
+        CHECK(elapsedMs(start) < 1000);  // back after its 100 ms, long before the read's 1500
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        CHECK(!reader.ask("wlan0", 3000000, c));  // still under way: not asked again, and not waited for
+        CHECK(elapsedMs(start) < 700 && chipReads <= 1);
+        usleep(2500000);
+        CHECK(reader.ask("wlan0", 5000000, c) && c.recoveries == 5 && chipReads == 2);
+        CHECK(!reader.ask("wlan0", 1000, c));  // maybe under way at its end: the destructor waits for it
+    }
+    CHECK(chipReads == 2 || chipReads == 3);
 }
 
 unsigned appsReads = 0;
@@ -358,8 +478,12 @@ void connectionCopy() {
 int main() {
     stationMessages();
     logLines();
+    chipCounters();
+    chipReader();
     tcpFigures();
     connectionCopy();
-    puts("PASS Wi-Fi link: station messages, log lines, TCP figures, the connection's copy, BMW Apps' slot");
+    puts(
+        "PASS Wi-Fi link: station messages, log lines, the chip's counters and their reader, TCP figures, the "
+        "connection's copy, BMW Apps' slot");
     return 0;
 }

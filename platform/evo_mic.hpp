@@ -34,7 +34,7 @@ private:
     bool captureUntilClosed(void* pcm, unsigned long& frames, unsigned& errors);
     bool wanted();
     bool pauseWhileWanted(unsigned ms);
-    void restUntilAskedAgain();
+    void restUntilAskedAgain(unsigned seen);
     DataCallback cb_;
     void* user_;
     void* lib_;

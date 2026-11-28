@@ -10,17 +10,19 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include "atomic_file.hpp"
 #include "control_address.hpp"
 #include "evo_log.hpp"
 
 namespace evo {
 
 bool parseControlCommand(const char* data, size_t len, ControlCommand& out) {
-    if (!data || !len || len > 64) {
+    if (!data || !len || len > 64 || memchr(data, '\0', len) != nullptr) {
         return false;
     }
     char buf[65];
@@ -29,12 +31,21 @@ bool parseControlCommand(const char* data, size_t len, ControlCommand& out) {
     while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ')) {
         buf[--len] = 0;
     }
-    char verb[16] = "";
-    int arg = 0;
-    char extra[8] = "";
-    int n = sscanf(buf, "%15s %d %7s", verb, &arg, extra);
-    if (n < 1 || n > 2) {
+    if (!len || buf[0] == ' ') {
         return false;
+    }
+    char* sep = strchr(buf, ' ');
+    const char* verb = buf;
+    const char* argStr = nullptr;
+    if (sep) {
+        *sep = 0;
+        argStr = sep + 1;
+        while (*argStr == ' ') {
+            ++argStr;
+        }
+        if (!*argStr) {
+            return false;
+        }
     }
     static const char* const known[] = {"ping", "show",     "hide",      "quit", "gear", "await",
                                         "pdc",  "daynight", "drivemode", "call", "popup"};
@@ -42,6 +53,7 @@ bool parseControlCommand(const char* data, size_t len, ControlCommand& out) {
     for (unsigned i = 0; i < sizeof(known) / sizeof(known[0]); ++i) {
         if (!strcmp(verb, known[i])) {
             ok = true;
+            break;
         }
     }
     if (!ok) {
@@ -49,16 +61,38 @@ bool parseControlCommand(const char* data, size_t len, ControlCommand& out) {
     }
     const bool needsArg = !strcmp(verb, "gear") || !strcmp(verb, "pdc") || !strcmp(verb, "daynight") ||
                           !strcmp(verb, "call") || !strcmp(verb, "popup");
-    if (needsArg != (n == 2) && strcmp(verb, "drivemode")) {
+    const bool optionalArg = !strcmp(verb, "drivemode");
+    if (argStr && !needsArg && !optionalArg) {
         return false;
+    }
+    if (!argStr && needsArg) {
+        return false;
+    }
+    int arg = 0;
+    if (argStr) {
+        const char* p = argStr;
+        if (*p == '-' || *p == '+') {
+            ++p;
+        }
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        char* end = nullptr;
+        errno = 0;
+        const long parsed = strtol(argStr, &end, 10);
+        if (errno != 0 || end == argStr || *end != '\0' || parsed < INT_MIN || parsed > INT_MAX) {
+            return false;
+        }
+        arg = static_cast<int>(parsed);
     }
     out.verb = verb;
     out.arg = arg;
-    out.hasArg = n == 2;
+    out.hasArg = argStr != nullptr;
     return true;
 }
 
-EvoControl::EvoControl() : fd_(-1), started_(false), running_(false), lastWriteMs_(0), cb_(nullptr), user_(nullptr) {}
+EvoControl::EvoControl()
+    : fd_(-1), started_(false), running_(false), lastWriteMs_(0), ignoredLogs_(0), cb_(nullptr), user_(nullptr) {}
 EvoControl::~EvoControl() {
     stop();
 }
@@ -70,6 +104,13 @@ bool EvoControl::start(const char* name, const char* stateFile, Callback cb, voi
     fd_ = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd_ < 0) {
         ELOG("Control", "no control channel: socket: %s", strerror(errno));
+        return false;
+    }
+    int one = 1;
+    if (setsockopt(fd_, SOL_SOCKET, SO_PASSCRED, &one, sizeof(one)) != 0) {
+        ELOG("Control", "no control channel: SO_PASSCRED refused (%s)", strerror(errno));
+        close(fd_);
+        fd_ = -1;
         return false;
     }
     sockaddr_un a;
@@ -115,25 +156,20 @@ void EvoControl::writeState(const char* state, int overlay) {
     if (stateFile_.empty()) {
         return;
     }
-    char line[64];
-    snprintf(line, sizeof(line), "%s %d %d\n", state, static_cast<int>(getpid()), overlay);
+    char text[64];
+    snprintf(text, sizeof(text), "%s %d %d", state, static_cast<int>(getpid()), overlay);
     const uint32_t now = monoMs();
-    if (last_ == line && now - lastWriteMs_ < 5000) {
+    if (last_ == text && now - lastWriteMs_ < 5000) {
         return;
     }
-    std::string tmp = stateFile_ + ".tmp";
-    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-    if (fd < 0) {
-        return;
-    }
-    ssize_t w = write(fd, line, strlen(line));
-    (void)w;
-    close(fd);
-    if (rename(tmp.c_str(), stateFile_.c_str()) == 0) {
-        if (last_ != line) {
-            ELOG("Control", "state -> %s", line);
+    char line[66];
+    const int n = snprintf(line, sizeof(line), "%s\n", text);
+    if (n > 0 && n < static_cast<int>(sizeof(line)) &&
+        writeAtomicFile(stateFile_.c_str(), line, static_cast<size_t>(n), 0644)) {
+        if (last_ != text) {
+            ELOG("Control", "state -> %s", text);
         }
-        last_ = line;
+        last_ = text;
         lastWriteMs_ = now;
     }
 }
@@ -145,6 +181,7 @@ void* EvoControl::threadMain(void* self) {
 
 void EvoControl::run() {
     char buf[96];
+    const uid_t ownUid = geteuid();
     while (running_) {
         struct pollfd p;
         p.fd = fd_;
@@ -154,18 +191,54 @@ void EvoControl::run() {
             continue;
         }
         sockaddr_un from;
-        socklen_t fl = sizeof(from);
-        ssize_t n = recvfrom(fd_, buf, sizeof(buf), MSG_DONTWAIT, reinterpret_cast<sockaddr*>(&from), &fl);
+        memset(&from, 0, sizeof(from));
+        struct iovec iov;
+        iov.iov_base = buf;
+        iov.iov_len = sizeof(buf);
+        union {
+            char bytes[CMSG_SPACE(sizeof(struct ucred))];
+            struct cmsghdr align;
+        } control;
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_name = &from;
+        msg.msg_namelen = sizeof(from);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.bytes;
+        msg.msg_controllen = sizeof(control.bytes);
+        const ssize_t n = recvmsg(fd_, &msg, MSG_DONTWAIT);
         if (n <= 0) {
+            continue;
+        }
+        bool hasCred = false;
+        struct ucred cred;
+        memset(&cred, 0, sizeof(cred));
+        for (struct cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+            if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_CREDENTIALS &&
+                cm->cmsg_len >= CMSG_LEN(sizeof(struct ucred))) {
+                memcpy(&cred, CMSG_DATA(cm), sizeof(cred));
+                hasCred = true;
+                break;
+            }
+        }
+        if (!hasCred || !controlPeerAllowed(cred.uid, ownUid)) {
+            if (++ignoredLogs_ <= 20 || ignoredLogs_ % 200 == 0) {
+                ELOG("Control", "command refused: unauthorised peer uid=%ld (total %u)",
+                     hasCred ? static_cast<long>(cred.uid) : -1L, ignoredLogs_);
+            }
             continue;
         }
         ControlCommand c;
         if (!parseControlCommand(buf, static_cast<size_t>(n), c)) {
-            ELOG("Control", "command ignored (%d B)", (int)n);
+            if (++ignoredLogs_ <= 20 || ignoredLogs_ % 200 == 0) {
+                ELOG("Control", "command ignored (%d B, total %u)", static_cast<int>(n), ignoredLogs_);
+            }
             continue;
         }
         if (c.verb == "ping") {
             // A sender with no address of its own cannot be answered; never wait on a sender that does not read.
+            const socklen_t fl = msg.msg_namelen;
             if (fl > sizeof(sa_family_t) && fl <= sizeof(from)) {
                 sendto(fd_, "pong", 4, MSG_DONTWAIT, reinterpret_cast<sockaddr*>(&from), fl);
             }

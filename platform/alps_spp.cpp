@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <climits>
 #include <cstring>
 
 #include "evo_log.hpp"
@@ -93,13 +94,16 @@ struct AlpsSppLink::Impl {
     pthread_mutex_t mu, requestMu;
     pthread_cond_t cv;
     int pair[2];
-    bool link, borrowed, requireConnect, remoteClosed, txPending, txAllowed, uuidWaiting, cfgWaiting;
+    // link, borrowed, remoteClosed, rx: the socket pair of the link exposed to the reader, and the Bluetooth
+    // connection behind it. connectPending, pendingRx: a newer connection the stack reported while that pair was still
+    // held (by its reader until closeLink, or by its last bytes on their way to it), and what it sent meanwhile.
+    bool link, borrowed, requireConnect, remoteClosed, connectPending, txPending, txAllowed, uuidWaiting, cfgWaiting;
     bool uuidPoisoned, cfgPoisoned, cfgWrite;
     int uuidStatus, cfgStatus;
     uint8_t cfgInst;
     uint16_t cfgId;
     uint32_t txSince;
-    std::vector<uint8_t> rx, cfgData;
+    std::vector<uint8_t> rx, pendingRx, cfgData;
     size_t rxOffset;
     uint8_t phone[6];  // the device whose Android Auto link last opened, to tell it from the others in the log
     bool phoneKnown;
@@ -116,6 +120,7 @@ struct AlpsSppLink::Impl {
           borrowed(false),
           requireConnect(false),
           remoteClosed(false),
+          connectPending(false),
           txPending(false),
           txAllowed(true),
           uuidWaiting(false),
@@ -165,6 +170,24 @@ struct AlpsSppLink::Impl {
         rx.clear();
         rxOffset = 0;
         pthread_cond_broadcast(&cv);
+        openPending();
+    }
+    // mu held. Once the previous pair is closed, the link of the connection that came meanwhile, with what it sent.
+    void openPending() {
+        if (!connectPending || link || pair[1] >= 0) {
+            return;
+        }
+        connectPending = false;
+        requireConnect = false;  // the stack reported it connected
+        std::vector<uint8_t> early;
+        early.swap(pendingRx);
+        if (!openLink()) {
+            return;
+        }
+        ELOG("SPP", "link of the phone's new connection, %u byte(s) received while the previous one was closing",
+             static_cast<unsigned>(early.size()));
+        rx.swap(early);
+        rxOffset = 0;
     }
     bool openLink() {
         if (link) {
@@ -173,11 +196,11 @@ struct AlpsSppLink::Impl {
         if (pair[1] >= 0 || monitor || !active || requireConnect) {
             return false;
         }
-        if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
+        // Close-on-exec from the start, not a moment later: other threads start programs meanwhile.
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) != 0) {
             return false;
         }
-        if (fcntl(pair[0], F_SETFD, FD_CLOEXEC) < 0 || fcntl(pair[1], F_SETFD, FD_CLOEXEC) < 0 ||
-            fcntl(pair[0], F_SETFL, O_NONBLOCK) < 0) {
+        if (fcntl(pair[0], F_SETFL, O_NONBLOCK) < 0) {
             breakLink();
             return false;
         }
@@ -326,7 +349,23 @@ struct AlpsSppLink::Impl {
             }
             if (connecting) {
                 requireConnect = false;
-                openLink();
+                // A phone opens its link again 0.1 s after it closed (MINI F56): the previous pair may still be held,
+                // by its reader until closeLink() or by its last bytes on their way to it. Its connection is kept for
+                // the moment that pair is closed; opening it now failed, and the phone's data was dropped until its
+                // next connection.
+                if (link ? remoteClosed : pair[1] >= 0) {
+                    if (!connectPending) {  // a second report of the same connection keeps what it sent
+                        ELOG("SPP", "new connection while the previous link is still held: opened once it is closed");
+                    }
+                    connectPending = true;
+                } else {
+                    openLink();
+                }
+            } else if (connectPending) {
+                // The new connection went before the previous link was closed: nothing is left of it.
+                connectPending = false;
+                pendingRx.clear();
+                requireConnect = true;
             } else {
                 // Preserve bytes already received before exposing EOF to the WPP reader.
                 remoteClosed = true;
@@ -373,6 +412,17 @@ struct AlpsSppLink::Impl {
             const uint8_t* data;
             int n;
             if (!byteArray(it, data, n) || n != len || !n) {
+                return;
+            }
+            if (connectPending) {  // the new connection's, kept until its link opens
+                if (pendingRx.size() + n > maxRx) {
+                    ELOG("SPP", "receive buffer full before the new link opened: that connection is dropped");
+                    connectPending = false;
+                    pendingRx.clear();
+                    requireConnect = true;
+                    return;
+                }
+                pendingRx.insert(pendingRx.end(), data, data + n);
                 return;
             }
             if (remoteClosed || !openLink()) {
@@ -532,6 +582,40 @@ struct AlpsSppLink::Impl {
     }
 };
 
+int queryAlpsServiceUid() {
+    pthread_once(&dbusOnce, initDbus);
+    if (!dbusReady) {
+        return -1;
+    }
+    DBusError e;
+    dbus_error_init(&e);
+    DBusConnection* conn = dbus_bus_get_private(DBUS_BUS_SYSTEM, &e);
+    if (!conn) {
+        dbus_error_free(&e);
+        return -1;
+    }
+    dbus_connection_set_exit_on_disconnect(conn, FALSE);
+    DBusMessage* q =
+        dbus_message_new_method_call(DBUS_SERVICE_DBUS, DBUS_PATH_DBUS, DBUS_INTERFACE_DBUS, "GetConnectionUnixUser");
+    DBusMessage* reply = nullptr;
+    if (q && dbus_message_append_args(q, DBUS_TYPE_STRING, &service, DBUS_TYPE_INVALID)) {
+        reply = dbus_connection_send_with_reply_and_block(conn, q, 2000, &e);
+    }
+    if (q) {
+        dbus_message_unref(q);
+    }
+    dbus_uint32_t uid = 0;
+    const bool ok = reply && !dbus_error_is_set(&e) &&
+                    dbus_message_get_args(reply, nullptr, DBUS_TYPE_UINT32, &uid, DBUS_TYPE_INVALID);
+    if (reply) {
+        dbus_message_unref(reply);
+    }
+    dbus_error_free(&e);
+    dbus_connection_close(conn);
+    dbus_connection_unref(conn);
+    return (ok && uid <= static_cast<dbus_uint32_t>(INT_MAX)) ? static_cast<int>(uid) : -1;
+}
+
 AlpsSppLink::AlpsSppLink() : p_(new Impl) {}
 AlpsSppLink::~AlpsSppLink() {
     stop();
@@ -622,7 +706,8 @@ bool AlpsSppLink::start(uint8_t instance) {
         Lock lock(p_->mu);
         p_->inst = instance;
         p_->active = true;
-        p_->uuidPoisoned = p_->cfgPoisoned = p_->requireConnect = p_->remoteClosed = false;
+        p_->uuidPoisoned = p_->cfgPoisoned = p_->requireConnect = p_->remoteClosed = p_->connectPending = false;
+        p_->pendingRx.clear();
     }
     if (pthread_create(&p_->dispatchThread, nullptr, Impl::dispatch, p_) != 0) {
         stop();
@@ -734,6 +819,7 @@ void AlpsSppLink::closeLink() {
         p_->pair[1] = -1;
     }
     p_->borrowed = false;
+    p_->openPending();  // a connection that came while the reader held this link
 }
 void AlpsSppLink::interruptLink() {
     Lock lock(p_->mu);

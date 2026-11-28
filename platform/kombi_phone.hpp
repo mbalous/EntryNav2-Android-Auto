@@ -46,6 +46,10 @@ enum DisplayUnit {
     kUnitYards = 7,
 };
 
+// The farthest distance to a maneuver taken from the phone, in metres (100 000 km). A farther one, a negative one or
+// one that is no number at all (inf, nan) is no distance: never passed on to the cluster.
+const int64_t kFarthestMetres = 100000000;
+
 // One direction of a lane: LaneDirection.Shape (0 unknown, 1 straight, 2/3 slight left/right, 4/5 left/right, 6/7 sharp
 // left/right, 8/9 U-turn left/right), and whether the phone highlights it as a lane to take.
 struct LaneShape {
@@ -63,9 +67,9 @@ struct Maneuver {
     int exitNumber;   // NavigationManeuver's roundabout exit number as sent; -1 when absent
     bool hasExitAngle;
     int64_t exitAngle;
-    std::string distanceText;  // the phone's display value: "0.3", "600"
-    int distanceUnit;          // DisplayUnit
-    bool hasMetres;
+    std::string distanceText;      // the phone's display value: "0.3", "600"
+    int distanceUnit;              // DisplayUnit
+    bool hasMetres;                // metres was sent, and is from 0 to kFarthestMetres
     int64_t metres;                // to the maneuver
     std::vector<PhoneLane> lanes;  // left to right; phones send them near the junction only
 
@@ -75,12 +79,21 @@ struct Maneuver {
     bool sameDistance(const Maneuver& other) const;
 };
 
-// The newest body of each message the arrows read. A plain value: the service copies it from the session thread.
+// At most this much of a message's body is kept. The fields read are each one's first occurrence, at the start of
+// the message (the next step, its distance, the status), and a phone's take a few hundred bytes: the end of a longer
+// one (the route's later steps) is never read. A session may hand over up to 8 MiB per message.
+const size_t kMaxNavBody = 32 * 1024;
+
+// The newest body of each message the arrows read. A plain value: the service copies it from the session thread,
+// only when its revision has changed.
 class NavInbox {
 public:
-    // Keeps the body when the arrows read this message; false for any other message.
+    NavInbox() : revision_(0) {}
+    // Keeps the body, its first kMaxNavBody bytes, when the arrows read this message; false for any other message.
     bool keep(uint16_t id, const uint8_t* body, size_t size);
     void clear();
+    // Moves on with each message kept and each clear: two copies of the same revision read the same.
+    unsigned revision() const { return revision_; }
     // Guidance is on only while the latest NavigationStatus says active: rerouting counts as off, and the caller's
     // grace period keeps the arrow through it.
     bool guiding() const;
@@ -90,6 +103,7 @@ public:
 
 private:
     std::vector<uint8_t> status_, turn_, turnDistance_, state_, position_;
+    unsigned revision_;
 };
 
 }  // namespace kombi

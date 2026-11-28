@@ -55,9 +55,28 @@ bool writeAll(int fd, const char* data, size_t size) {
     return true;
 }
 
+std::string decodeMountField(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '\\' && i + 3 < raw.size() && raw[i + 1] >= '0' && raw[i + 1] <= '7' && raw[i + 2] >= '0' &&
+            raw[i + 2] <= '7' && raw[i + 3] >= '0' && raw[i + 3] <= '7') {
+            const unsigned v = static_cast<unsigned>(raw[i + 1] - '0') * 64U +
+                               static_cast<unsigned>(raw[i + 2] - '0') * 8U + static_cast<unsigned>(raw[i + 3] - '0');
+            if (v > 0 && v <= 255) {
+                out.push_back(static_cast<char>(v));
+                i += 3;
+                continue;
+            }
+        }
+        out.push_back(raw[i]);
+    }
+    return out;
+}
+
 // One source into the folder, flushed to the stick. False when the stick refused it; *size: the bytes copied.
 bool copyFile(int in, const std::string& to, off_t* size) {
-    const int out = open(to.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    const int out = open(to.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (out < 0) {
         return false;
     }
@@ -91,6 +110,7 @@ std::vector<StickMount> usbStickMounts(const std::string& mounts, const std::str
         if (!(fields >> device >> point >> type >> options)) {
             continue;
         }
+        point = decodeMountField(point);
         if (point.size() > prefix.size() && point.compare(0, prefix.size(), prefix) == 0 && stickFileSystem(type)) {
             const StickMount stick = {point, options == "rw" || options.compare(0, 3, "rw,") == 0};
             sticks.push_back(stick);
@@ -130,6 +150,10 @@ LogCopyResult copyLogs(const std::string& stick, const std::vector<LogSource>& s
     if (mkdir(parent.c_str(), 0755) != 0 && errno != EEXIST) {
         return LogCopyResult::kWriteFailed;
     }
+    struct stat parentSt;
+    if (lstat(parent.c_str(), &parentSt) != 0 || !S_ISDIR(parentSt.st_mode)) {
+        return LogCopyResult::kWriteFailed;
+    }
     folder.clear();
     for (int n = 1; n <= 9 && folder.empty(); ++n) {
         const std::string name = parent + "/" + stamp + (n > 1 ? "-" + number(n) : std::string());
@@ -146,8 +170,12 @@ LogCopyResult copyLogs(const std::string& stick, const std::vector<LogSource>& s
     bool anyLog = false, failed = false;
     for (size_t i = 0; i < sources.size(); ++i) {
         const LogSource& s = sources[i];
-        const int in = open(s.path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (in < 0) {
+        const int in = open(s.path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        struct stat inSt;
+        if (in < 0 || fstat(in, &inSt) != 0 || !S_ISREG(inSt.st_mode)) {
+            if (in >= 0) {
+                close(in);
+            }
             info += s.name + ": not on the car (" + s.path + ")\n";
             continue;
         }
@@ -162,7 +190,7 @@ LogCopyResult copyLogs(const std::string& stick, const std::vector<LogSource>& s
         anyLog = anyLog || s.log;
         info += s.name + ": " + number(static_cast<long long>(size)) + " bytes from " + s.path + "\n";
     }
-    const int out = open((folder + "/info.txt").c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    const int out = open((folder + "/info.txt").c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
     const bool infoWritten = out >= 0 && writeAll(out, info.data(), info.size()) && fsync(out) == 0;
     if (out >= 0) {
         close(out);

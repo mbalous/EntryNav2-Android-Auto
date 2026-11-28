@@ -161,10 +161,34 @@ struct EvoPill::Wayland {
             ELOG("VolumePill", "no shared memory (%s): no pill", strerror(errno));
             return false;
         }
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
         unlink(path.c_str());
-        void* p = ftruncate(fd, static_cast<off_t>(mapped)) == 0
-                      ? mmap(nullptr, mapped, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
-                      : MAP_FAILED;
+        // Pre-allocate backing pages before mmap so a full tmpfs never triggers SIGBUS when writing pixels.
+        bool sized = false;
+        const int allocErr = posix_fallocate(fd, 0, static_cast<off_t>(mapped));
+        if (allocErr == 0) {
+            sized = true;
+        } else if (allocErr == EOPNOTSUPP || allocErr == EINVAL) {
+            if (ftruncate(fd, static_cast<off_t>(mapped)) == 0) {
+                uint8_t zero[4096];
+                memset(zero, 0, sizeof(zero));
+                size_t left = mapped;
+                sized = true;
+                while (left > 0) {
+                    const size_t chunk = left < sizeof(zero) ? left : sizeof(zero);
+                    const ssize_t w = write(fd, zero, chunk);
+                    if (w < 0 && errno == EINTR) {
+                        continue;
+                    }
+                    if (w <= 0) {
+                        sized = false;
+                        break;
+                    }
+                    left -= static_cast<size_t>(w);
+                }
+            }
+        }
+        void* p = sized ? mmap(nullptr, mapped, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED;
         if (p == MAP_FAILED) {
             ::close(fd);
             ELOG("VolumePill", "no shared memory: no pill");
@@ -203,33 +227,60 @@ struct EvoPill::Wayland {
         return true;
     }
     void shutdown() {
-        if (!display) {
-            return;
-        }
-        for (int i = 0; i < 2; ++i) {
-            if (buffers[i]) {
-                marshal(buffers[i], kBufferDestroy);
-                destroy(buffers[i]);
+        if (display) {
+            for (int i = 0; i < 2; ++i) {
+                if (buffers[i]) {
+                    marshal(buffers[i], kBufferDestroy);
+                    destroy(buffers[i]);
+                    buffers[i] = nullptr;
+                }
             }
+            if (pool) {
+                marshal(pool, kPoolDestroy);
+                destroy(pool);
+                pool = nullptr;
+            }
+            if (iviSurface) {
+                marshal(iviSurface, kIviSurfaceDestroy);
+                destroy(iviSurface);
+                iviSurface = nullptr;
+            }
+            if (surface) {
+                marshal(surface, kSurfaceDestroy);
+                destroy(surface);
+                surface = nullptr;
+            }
+            if (iviApp) {
+                destroy(iviApp);
+                iviApp = nullptr;
+            }
+            if (shm) {
+                destroy(shm);
+                shm = nullptr;
+            }
+            if (compositor) {
+                destroy(compositor);
+                compositor = nullptr;
+            }
+            if (registry) {
+                destroy(registry);
+                registry = nullptr;
+            }
+            flush(display);
+            disconnect(display);  // the compositor drops whatever is left with the connection
+            display = nullptr;
         }
-        if (pool) {
-            marshal(pool, kPoolDestroy);
-            destroy(pool);
-        }
-        if (iviSurface) {
-            marshal(iviSurface, kIviSurfaceDestroy);
-            destroy(iviSurface);
-        }
-        if (surface) {
-            marshal(surface, kSurfaceDestroy);
-            destroy(surface);
-        }
-        flush(display);
-        disconnect(display);  // the compositor drops whatever is left with the connection
-        display = nullptr;
         if (pixels) {
             munmap(pixels, mapped);
             pixels = nullptr;
+        }
+        if (ivi) {
+            dlclose(ivi);
+            ivi = nullptr;
+        }
+        if (lib) {
+            dlclose(lib);
+            lib = nullptr;
         }
     }
 };
@@ -260,10 +311,9 @@ bool EvoPill::start(uint32_t surfaceId, uint32_t layerId, int screenW, int scree
     if (started_ || !surfaceId || screenW < pill::kWidth || screenH < pill::kHeight + pill::kBottomMargin) {
         return false;
     }
-    if (pipe(wake_) != 0) {
+    if (pipe2(wake_, O_CLOEXEC | O_NONBLOCK) != 0) {
         return false;
     }
-    fcntl(wake_[1], F_SETFL, fcntl(wake_[1], F_GETFL, 0) | O_NONBLOCK);
     surfaceId_ = surfaceId;
     layerId_ = layerId;
     screenW_ = screenW;
@@ -287,8 +337,8 @@ void EvoPill::show(unsigned value, unsigned min, unsigned max) {
     value_ = value;
     min_ = min;
     max_ = max;
+    wakeLocked();
     pthread_mutex_unlock(&mu_);
-    wake();
 }
 
 void EvoPill::hide() {
@@ -296,17 +346,17 @@ void EvoPill::hide() {
     const bool needed = !hidePending_;
     showPending_ = false;
     hidePending_ = true;
-    pthread_mutex_unlock(&mu_);
     if (needed) {
-        wake();
+        wakeLocked();
     }
+    pthread_mutex_unlock(&mu_);
 }
 
 bool EvoPill::ready() const {
     return ready_;
 }
 
-void EvoPill::wake() {
+void EvoPill::wakeLocked() {
     if (wake_[1] >= 0) {
         const char c = 1;
         ssize_t w = write(wake_[1], &c, 1);
@@ -319,12 +369,20 @@ void EvoPill::stop() {
         return;
     }
     running_ = false;
-    wake();
+    pthread_mutex_lock(&mu_);
+    wakeLocked();
+    pthread_mutex_unlock(&mu_);
     pthread_join(thread_, nullptr);
     started_ = false;
-    ::close(wake_[0]);
-    ::close(wake_[1]);
+    pthread_mutex_lock(&mu_);
+    if (wake_[0] >= 0) {
+        ::close(wake_[0]);
+    }
+    if (wake_[1] >= 0) {
+        ::close(wake_[1]);
+    }
     wake_[0] = wake_[1] = -1;
+    pthread_mutex_unlock(&mu_);
 }
 
 void* EvoPill::threadMain(void* self) {
@@ -351,6 +409,7 @@ void EvoPill::run() {
     }
     ready_ = placed;
     bool visible = false;
+    bool mayBeVisible = false;
     uint32_t hideAt = 0;
     const int fd = w.display ? w.getFd(w.display) : -1;
     while (running_ && placed) {
@@ -388,13 +447,18 @@ void EvoPill::run() {
             pthread_mutex_unlock(&mu_);
             if (!visible) {
                 // A new Android Auto session puts the picture on top again: back above it before showing.
-                visible = ilm.raiseSurface(surfaceId_, layerId_) && ilm.setSurfaceVisibility(surfaceId_, true);
+                const bool raised = ilm.raiseSurface(surfaceId_, layerId_);
+                if (raised) {
+                    mayBeVisible = true;  // a timeout in setSurfaceVisibility may still have made it visible
+                    visible = ilm.setSurfaceVisibility(surfaceId_, true);
+                }
             }
             hideAt = now + kShowMs;
         }
-        if (visible && (wantHide || static_cast<int32_t>(now - hideAt) >= 0)) {
+        if ((visible || mayBeVisible) && (wantHide || static_cast<int32_t>(now - hideAt) >= 0)) {
             ilm.setSurfaceVisibility(surfaceId_, false);
             visible = false;
+            mayBeVisible = false;
         }
         if (wantHide) {
             pthread_mutex_lock(&mu_);

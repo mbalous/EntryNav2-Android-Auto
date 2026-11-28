@@ -3,6 +3,7 @@
 // The service's log kept on the data partition (platform/kept_log.hpp), in a temporary folder: where it is opened,
 // the /tmp link, the old part at opening, the trim while a writer keeps its descriptor, the fallback to /tmp.
 #include <assert.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +77,16 @@ int main() {
     assert(evo::trimKeptLog(fd, kept.c_str(), old.c_str(), 4096) == evo::KeptLogTrim::kWithin);
     writeBytes(fd, 5000, 'd');
     assert(evo::trimKeptLog(fd, kept.c_str(), old.c_str(), 4096) == evo::KeptLogTrim::kMoved);
-    assert(sizeOf(kept) == 0 && sizeOf(old) == 6000);
+    assert(sizeOf(kept) == 0 && sizeOf(old) == 4096);
+    {
+        char tail[16];
+        const int rfd = open(old.c_str(), O_RDONLY);
+        assert(rfd >= 0 && read(rfd, tail, sizeof(tail)) == static_cast<ssize_t>(sizeof(tail)));
+        close(rfd);
+        for (size_t i = 0; i < sizeof(tail); ++i) {
+            assert(tail[i] == 'd');
+        }
+    }
     writeBytes(fd, 10, 'e');
     assert(sizeOf(kept) == 10);
     // The old part cannot be written: emptied all the same, the partition must not fill.
@@ -108,10 +118,25 @@ int main() {
     close(fd);
     assert(lstat(ram.c_str(), &link) == 0 && S_ISREG(link.st_mode) && sizeOf(ram) == 7);
 
+    // A copy cut short by a power-off left its temporary file: the next copy takes the same name, nothing piles up on
+    // the data partition.
+    const std::string copy = at("copy.log");
+    touch(copy + ".tmp");
+    const int src = open(at("other.log").c_str(), O_RDONLY);
+    assert(src >= 0 && evo::copyToFile(src, copy.c_str()) && sizeOf(copy) == 5000);
+    close(src);
+    DIR* folder = opendir(g_dir.c_str());
+    int leftovers = 0;
+    while (dirent* e = readdir(folder)) {
+        leftovers += strncmp(e->d_name, "copy.log.", 9) == 0 ? 1 : 0;
+    }
+    closedir(folder);
+    assert(leftovers == 0);
+
     const std::string clean = "rm -rf '" + g_dir + "'";
     assert(system(clean.c_str()) == 0);
     puts(
         "PASS kept service log: none in production, data partition with a /tmp link, old part at opening, trimmed "
-        "under a live writer, emptied when the old part fails, /tmp when the partition refuses");
+        "under a live writer, emptied when the old part fails, /tmp when the partition refuses, no copy left behind");
     return 0;
 }

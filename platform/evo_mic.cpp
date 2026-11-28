@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include <cstdlib>
+#include <cstring>
 
 #include "evo_log.hpp"
 
@@ -76,20 +77,24 @@ EvoMic::~EvoMic() {
     pthread_mutex_destroy(&mu_);
 }
 
+template <typename T>
+bool loadSym(void* lib, const char* name, T& out) {
+    void* p = dlsym(lib, name);
+    memcpy(&out, &p, sizeof(p));
+    return p != nullptr;
+}
+
 bool EvoMic::load() {
     lib_ = dlopen("libasound.so.2", RTLD_NOW | RTLD_LOCAL);
     if (!lib_) {
         ELOG("Mic", "libasound.so.2 not found: no microphone");
         return false;
     }
-    *reinterpret_cast<void**>(&open_) = dlsym(lib_, "snd_pcm_open");
-    *reinterpret_cast<void**>(&setParams_) = dlsym(lib_, "snd_pcm_set_params");
-    *reinterpret_cast<void**>(&readi_) = dlsym(lib_, "snd_pcm_readi");
-    *reinterpret_cast<void**>(&wait_) = dlsym(lib_, "snd_pcm_wait");
-    *reinterpret_cast<void**>(&recover_) = dlsym(lib_, "snd_pcm_recover");
-    *reinterpret_cast<void**>(&close_) = dlsym(lib_, "snd_pcm_close");
-    *reinterpret_cast<void**>(&strerror_) = dlsym(lib_, "snd_strerror");
-    if (!open_ || !setParams_ || !readi_ || !wait_ || !recover_ || !close_ || !strerror_) {
+    const bool ok = loadSym(lib_, "snd_pcm_open", open_) && loadSym(lib_, "snd_pcm_set_params", setParams_) &&
+                    loadSym(lib_, "snd_pcm_readi", readi_) && loadSym(lib_, "snd_pcm_wait", wait_) &&
+                    loadSym(lib_, "snd_pcm_recover", recover_) && loadSym(lib_, "snd_pcm_close", close_) &&
+                    loadSym(lib_, "snd_strerror", strerror_);
+    if (!ok) {
         ELOG("Mic", "libasound incomplete: no microphone");
         dlclose(lib_);
         lib_ = nullptr;
@@ -166,10 +171,9 @@ bool EvoMic::pauseWhileWanted(unsigned ms) {
     return keep;
 }
 
-// Waits for the phone's next open request, a close or stop(): only a new request opens the microphone again.
-void EvoMic::restUntilAskedAgain() {
+// Waits for a newer open request than `seen`, a close or stop(): only a new request opens the microphone again.
+void EvoMic::restUntilAskedAgain(unsigned seen) {
     pthread_mutex_lock(&mu_);
-    const unsigned seen = asks_;
     while (!quit_ && want_ && asks_ == seen) {
         pthread_cond_wait(&cv_, &mu_);
     }
@@ -201,10 +205,11 @@ bool EvoMic::captureUntilClosed(void* pcm, unsigned long& frames, unsigned& erro
         // Read first: the first read starts the capture, and a wait on a stream not started yet would only time out.
         long n = readi_(pcm, buf, kFrames);
         if (n > 0) {
-            frames += static_cast<unsigned long>(n);
+            const unsigned long got = static_cast<unsigned long>(n) > kFrames ? kFrames : static_cast<unsigned long>(n);
+            frames += got;
             lastFrameMs = monoMs();
             if (cb_) {
-                cb_(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n) * 2, user_);
+                cb_(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(got) * 2, user_);
             }
             continue;
         }
@@ -234,9 +239,12 @@ bool EvoMic::captureUntilClosed(void* pcm, unsigned long& frames, unsigned& erro
 void EvoMic::listen() {
     unsigned silentFailures = 0;
     for (;;) {
+        pthread_mutex_lock(&mu_);
+        const unsigned seen = asks_;
+        pthread_mutex_unlock(&mu_);
         void* pcm = openCapture();
         if (!pcm) {
-            restUntilAskedAgain();  // an open that fails is not retried until the phone asks again
+            restUntilAskedAgain(seen);  // an open that fails is not retried until the phone asks again
             return;
         }
         ELOG("Mic", "open for the phone (%s)", kPcm);
@@ -252,7 +260,7 @@ void EvoMic::listen() {
         if (silentFailures >= kSilentFailuresBeforeRest) {
             ELOG("Mic", "%u captures in a row without sound: microphone left until the phone asks again",
                  silentFailures);
-            restUntilAskedAgain();
+            restUntilAskedAgain(seen);
             return;
         }
         if (!pauseWhileWanted(kReopenPauseMs)) {

@@ -6,9 +6,13 @@
 #ifndef ENTRY_AAD_PLATFORM_EVO_ELF_HPP
 #define ENTRY_AAD_PLATFORM_EVO_ELF_HPP
 #include <elf.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <string>
 #include <vector>
@@ -27,33 +31,64 @@ public:
     ElfFile() : symbols_(), strings_(), relocations_() {}
 
     bool load(const std::string& path) {
-        data_.clear();
-        relocations_.clear();
-        FILE* file = fopen(path.c_str(), "rb");
-        if (!file) {
+        reset();
+        const int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
             return false;
         }
+        struct stat st;
         const size_t kMaxBytes = 64 * 1024 * 1024;
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+            static_cast<uint64_t>(st.st_size) > kMaxBytes) {
+            close(fd);
+            return false;
+        }
         std::vector<uint8_t> buffer(65536);
-        size_t count;
-        while ((count = fread(&buffer[0], 1, buffer.size(), file)) != 0 && data_.size() <= kMaxBytes) {
+        bool failed = false;
+        for (;;) {
+            const ssize_t count = read(fd, &buffer[0], buffer.size());
+            if (count < 0 && errno == EINTR) {
+                continue;
+            }
+            if (count < 0) {
+                failed = true;
+                break;
+            }
+            if (count == 0) {
+                break;
+            }
+            if (static_cast<size_t>(count) > kMaxBytes - data_.size()) {
+                failed = true;
+                break;
+            }
             data_.insert(data_.end(), buffer.begin(), buffer.begin() + count);
         }
-        const bool failed = ferror(file) != 0;
-        fclose(file);
-        return !failed && data_.size() <= kMaxBytes && parse();
+        close(fd);
+        if (failed || !parse()) {
+            reset();
+            return false;
+        }
+        return true;
     }
 
     // A symbol this library defines; names it only imports do not count.
     bool symbol(const char* name, ElfSymbol& out) const {
+        if (!name || data_.empty() || !symbols_.sh_size || !strings_.sh_size) {
+            return false;
+        }
         const size_t wanted = strlen(name) + 1;
         const size_t entries = symbols_.sh_size / sizeof(Elf32_Sym);
         for (size_t i = 0; i < entries; ++i) {
             Elf32_Sym entry;
-            if (!copyAt(symbols_.sh_offset + i * sizeof(Elf32_Sym), &entry, sizeof(entry)) ||
-                entry.st_shndx == SHN_UNDEF || entry.st_name >= strings_.sh_size ||
-                wanted > strings_.sh_size - entry.st_name ||
-                memcmp(&data_[strings_.sh_offset + entry.st_name], name, wanted) != 0) {
+            const uint64_t symOff =
+                static_cast<uint64_t>(symbols_.sh_offset) + static_cast<uint64_t>(i) * sizeof(Elf32_Sym);
+            if (!copyAt(symOff, &entry, sizeof(entry)) || entry.st_shndx == SHN_UNDEF ||
+                entry.st_name >= strings_.sh_size || wanted > strings_.sh_size - entry.st_name) {
+                continue;
+            }
+            const uint64_t strOff = static_cast<uint64_t>(strings_.sh_offset) + entry.st_name;
+            if (strOff > data_.size() || wanted > data_.size() - strOff ||
+                memcmp(&data_[static_cast<size_t>(strOff)], name, wanted) != 0) {
                 continue;
             }
             out = ElfSymbol();
@@ -70,11 +105,17 @@ private:
     Elf32_Shdr symbols_, strings_;
     std::vector<Elf32_Shdr> relocations_;
 
+    void reset() {
+        data_.clear();
+        relocations_.clear();
+        memset(&symbols_, 0, sizeof(symbols_));
+        memset(&strings_, 0, sizeof(strings_));
+    }
     bool copyAt(uint64_t offset, void* out, size_t size) const {
         if (offset > data_.size() || size > data_.size() - offset) {
             return false;
         }
-        memcpy(out, &data_[offset], size);
+        memcpy(out, &data_[static_cast<size_t>(offset)], size);
         return true;
     }
     bool inFile(const Elf32_Shdr& section) const {
@@ -90,17 +131,18 @@ private:
         bool found = false;
         for (unsigned i = 0; i < header.e_shnum; ++i) {
             Elf32_Shdr section;
-            if (!copyAt(header.e_shoff + uint64_t(i) * sizeof(section), &section, sizeof(section))) {
+            if (!copyAt(static_cast<uint64_t>(header.e_shoff) + uint64_t(i) * sizeof(section), &section,
+                        sizeof(section))) {
                 return false;
             }
             if (section.sh_type == SHT_REL && inFile(section)) {
                 relocations_.push_back(section);
             } else if (section.sh_type == SHT_DYNSYM) {
                 symbols_ = section;
-                found =
-                    inFile(section) && section.sh_link < header.e_shnum &&
-                    copyAt(header.e_shoff + uint64_t(section.sh_link) * sizeof(section), &strings_, sizeof(strings_)) &&
-                    strings_.sh_type == SHT_STRTAB && inFile(strings_);
+                found = inFile(section) && section.sh_link < header.e_shnum &&
+                        copyAt(static_cast<uint64_t>(header.e_shoff) + uint64_t(section.sh_link) * sizeof(section),
+                               &strings_, sizeof(strings_)) &&
+                        strings_.sh_type == SHT_STRTAB && inFile(strings_);
             }
         }
         return found;
@@ -110,8 +152,10 @@ private:
             const size_t entries = relocations_[s].sh_size / sizeof(Elf32_Rel);
             for (size_t i = 0; i < entries; ++i) {
                 Elf32_Rel entry;
-                if (copyAt(relocations_[s].sh_offset + i * sizeof(Elf32_Rel), &entry, sizeof(entry)) &&
-                    ELF32_R_SYM(entry.r_info) == index && ELF32_R_TYPE(entry.r_info) == R_ARM_GLOB_DAT) {
+                const uint64_t off =
+                    static_cast<uint64_t>(relocations_[s].sh_offset) + static_cast<uint64_t>(i) * sizeof(Elf32_Rel);
+                if (copyAt(off, &entry, sizeof(entry)) && ELF32_R_SYM(entry.r_info) == index &&
+                    ELF32_R_TYPE(entry.r_info) == R_ARM_GLOB_DAT) {
                     return entry.r_offset;
                 }
             }

@@ -28,7 +28,9 @@ public:
     SppSnapshotReader& operator=(const SppSnapshotReader&) = delete;
     SppSnapshotReader();
     ~SppSnapshotReader();
-    bool open();
+    // expectedPid > 0 pins lookup to that process (saved baseline PID); 0 scans /proc.
+    // expectedUid >= 0 restricts lookup to processes owned by that UID (e.g. D-Bus owner of org.alps.evolution).
+    bool open(int expectedPid = 0, int expectedUid = -1);
     void close();  // forget the Alps process (open() rescans: retries, restarts)
     bool read(unsigned instance, SppSlotSnapshot& out, bool allowSplit = false);
     int pid() const { return pid_; }
@@ -37,13 +39,15 @@ public:
     // Pure decoder, tested using byte layouts and corroborating copies of the UUIDs.
     static bool decode(uint32_t state, const uint8_t record[34], const uint8_t info[80], const uint8_t connected[6],
                        SppSlotSnapshot& out, bool allowSplit = false);
+    // PC tests only: permit a mapped fixture library outside /opt/, /usr/lib/, /lib/.
+    static void setAllowAnyPathForTest(bool allow);
 
 private:
     int fd_, pid_;
     uint32_t base_;
     SppLayout layout_;
     std::string identity_, error_;
-    bool bytes(uint32_t offset, void* data, unsigned size);
+    bool bytes(uint64_t offset, void* data, unsigned size);
 };
 }  // namespace evo
 #endif

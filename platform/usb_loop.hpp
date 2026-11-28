@@ -30,7 +30,9 @@ struct UsbLoopSetup {
     UsbDevice* (*open)(unsigned bus, unsigned address);  // openUsbDevice; the tests have their own
     unsigned turnMs;                                     // between two looks at the bus
     unsigned afterResetMs;                               // a reset phone leaves the bus and comes back: not looked at
-    UsbLoopSetup() : sysfs("/sys/bus/usb/devices"), open(openUsbDevice), turnMs(500), afterResetMs(2000) {}
+    unsigned returnMs;  // how long a phone asked to switch is watched closely for its return as an accessory
+    UsbLoopSetup()
+        : sysfs("/sys/bus/usb/devices"), open(openUsbDevice), turnMs(500), afterResetMs(2000), returnMs(5000) {}
 };
 
 // Runs until a stop is requested.
@@ -41,7 +43,8 @@ struct UsbLoopSetup {
 // itself, or held by another program) is no use to the phone either: the phone alone is reset, which is what
 // unplugging it does, and it is
 // asked again. A phone that says nothing may be showing a question to its owner: it is tried again as it is, without
-// a reset. After 3 resets with no session that held, the phone is left alone until it is plugged in again.
+// a reset. After 3 resets with no session that held, the phone is left alone until it is plugged in again; so is a
+// phone that took the switch request 5 times without ever coming back as an accessory.
 void runUsbLoop(const UsbLoopSetup& setup, UsbHost& host);
 
 }  // namespace evo

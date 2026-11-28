@@ -16,6 +16,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include <atomic>
 #include <string>
@@ -29,6 +30,10 @@ struct ControlCommand {
 };
 // Pure parser. False for an unknown or malformed command.
 bool parseControlCommand(const char* data, size_t len, ControlCommand& out);
+// Pure UID check: only root or the service's own effective UID may drive Android Auto.
+inline bool controlPeerAllowed(uid_t peerUid, uid_t ownUid) {
+    return peerUid == 0 || peerUid == ownUid;
+}
 
 class EvoControl {
 public:
@@ -50,6 +55,7 @@ private:
     std::atomic<bool> running_;
     std::string stateFile_, last_;
     uint32_t lastWriteMs_;
+    unsigned ignoredLogs_;
     Callback cb_;
     void* user_;
 };

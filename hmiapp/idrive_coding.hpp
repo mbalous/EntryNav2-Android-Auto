@@ -8,7 +8,8 @@
 // (vtable slot 3) and getRole() (slot 21), as CHmiCCSController::pushbuttonToKeycode does in HmiMain3D. The app runs
 // inside HmiMain3D, so it asks the same server; both functions are found with dlsym, nothing is linked. If one is
 // missing or the server is not there yet, nothing is written: the service keeps its G-style keys and a BMW.
-// Runs on the app thread (onInit).
+// Called from onInit and iDrive's handlers. The lookups go through iDrive's per-thread instance cache: inside one of
+// the app's posted tasks they are refused, logged once, and nothing changes (posted_task.hpp).
 #ifndef ENTRY_AAD_HMIAPP_IDRIVE_CODING_HPP
 #define ENTRY_AAD_HMIAPP_IDRIVE_CODING_HPP
 
@@ -16,7 +17,8 @@ namespace evo {
 namespace app {
 
 // Reads the coding and writes contract::kControllerFile, contract::kBrandFile, contract::kDriverSideFile and
-// contract::kSeriesFile. False when one was not written (logged); a file not written is removed.
+// contract::kSeriesFile. False when one was not written (logged); a file not written is removed, except when refused
+// inside a posted task: the files stay as they were.
 bool writeIdriveCoding();
 
 // iDrive's own driving mode popup, read for the app itself (popup_peek.hpp, driveModePopupExpected).
@@ -24,7 +26,7 @@ bool writeIdriveCoding();
 //    IDevCarFES::isPopupAvailable() gives it: on and the device coded. Reached as HmiMain3D's CCarFesModeService::init
 //    does; the function is called only when the device's vtable holds this very one.
 //  - forced: coding variant 0x519d, with which CDevCarFES35 shows the popup even with the setting off.
-// Each 1, 0, or -1 when it could not be read. Logged. Runs on the app thread, like writeIdriveCoding().
+// Each 1, 0, or -1 when it could not be read (both -1 inside a posted task). Logged. Called like writeIdriveCoding().
 struct DriveModePopup {
     int setting, forced;
 };

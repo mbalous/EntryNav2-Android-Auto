@@ -476,8 +476,10 @@ int main(int argc, char** argv) {
     signal(SIGALRM, timedOut);
     alarm(120);
     fflush(stdout);
+    // What the head unit logs meanwhile is kept aside: neither the car's Wi-Fi name nor its address may be in it.
+    char logPath[] = "/tmp/entry-wireless-phone-log-XXXXXX";
     const int console = dup(1);
-    const int sink = open("/dev/null", O_WRONLY);
+    const int sink = mkstemp(logPath);
     if (console < 0 || sink < 0 || dup2(sink, 1) < 0) {
         return 1;
     }
@@ -488,7 +490,20 @@ int main(int argc, char** argv) {
     }
     fflush(stdout);
     dup2(console, 1);
+    std::string logged;
+    char chunk[4096];
+    ssize_t got;
+    lseek(sink, 0, SEEK_SET);
+    while ((got = read(sink, chunk, sizeof(chunk))) > 0) {
+        logged.append(chunk, static_cast<size_t>(got));
+    }
     close(sink);
+    unlink(logPath);
+    if (logged.find("EntryNav2 test") != std::string::npos || logged.find("02:00:00:00:00:01") != std::string::npos ||
+        logged.find("not-a-real-key") != std::string::npos) {
+        printf("FAIL wireless: the car's Wi-Fi name, address or key is in the head unit's log\n");
+        return 1;
+    }
     if (writing) {
         FILE* f = fopen(golden, "w");
         for (size_t i = 0; f && i < out.size(); ++i) {

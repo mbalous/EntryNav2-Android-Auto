@@ -39,10 +39,24 @@ struct FakeHostapd {
     }
 };
 
-evo::UapsdOffer withdraw(FakeHostapd& hostapd, std::initializer_list<const char*> replies) {
+// The service's stop, asked once this many hostapd commands were sent (0: before any; never: not asked).
+struct StopAfter {
+    const FakeHostapd* hostapd;
+    size_t commands;
+    bool operator()() const { return hostapd->sent.size() >= commands; }
+};
+const size_t never = static_cast<size_t>(-1);
+
+evo::UapsdOffer withdraw(FakeHostapd& hostapd, std::initializer_list<const char*> replies, size_t stopAfter = never,
+                         bool startKnown = true) {
     hostapd.replies.assign(replies.begin(), replies.end());
     hostapd.sent.clear();
-    return evo::withdrawUapsd(std::ref(hostapd));
+    const StopAfter stopping = {&hostapd, stopAfter};
+    return evo::withdrawUapsd(std::ref(hostapd), stopping, false, startKnown);
+}
+// The hostapd start could not be told: a RELOAD could not be kept to once per start.
+evo::UapsdOffer withdrawStartUnknown(FakeHostapd& hostapd, std::initializer_list<const char*> replies) {
+    return withdraw(hostapd, replies, never, false);
 }
 
 void uapsdCases() {
@@ -52,27 +66,54 @@ void uapsdCases() {
     CHECK(hostapd.sent.size() == 3 && hostapd.sent[0] == "set uapsd_advertisement_enabled 0" &&
           hostapd.sent[1] == "all_sta" && hostapd.sent[2] == "raw RELOAD");
     CHECK(withdraw(hostapd, {"OK", " \n", "OK\r\n"}) == evo::UapsdOffer::kWithdrawn);
-    // A station on the access point (its MIB lines): RELOAD would disconnect it, so it is not sent.
-    CHECK(withdraw(hostapd, {"OK\n", "02:00:00:00:00:01\nflags=[AUTH][ASSOC]\n"}) == evo::UapsdOffer::kBeaconLeft);
+    // A station on the access point (its MIB lines), a phone that joined by itself: RELOAD all the same. It keeps
+    // U-APSD for as long as it stays associated, so it is disconnected once and joins again without it (#203).
+    CHECK(withdraw(hostapd, {"OK\n", "02:00:00:00:00:01\nflags=[AUTH][ASSOC]\naid=1\n", "OK\n"}) ==
+          evo::UapsdOffer::kRejoined);
+    CHECK(hostapd.sent.size() == 3 && hostapd.sent[2] == "raw RELOAD");
+    CHECK(withdraw(hostapd, {"OK\n", "02:00:00:00:00:01\n", "FAIL\n"}) == evo::UapsdOffer::kReloadRefused);
+    // RELOAD not answered (hostapd_cli timed out or failed): it may have run, told apart from a refusal.
+    CHECK(withdraw(hostapd, {"OK\n", "02:00:00:00:00:01\n", "!"}) == evo::UapsdOffer::kReloadUnanswered);
+    // A station list that cannot be read is no proof of an empty one: RELOAD all the same, but no disconnection is
+    // claimed, since maybe nobody was there.
+    CHECK(withdraw(hostapd, {"OK\n", "!", "OK\n"}) == evo::UapsdOffer::kWithdrawn && hostapd.sent.size() == 3);
+    CHECK(withdraw(hostapd, {"OK\n", "'STA-FIRST' command failed.\n", "OK\n"}) == evo::UapsdOffer::kWithdrawn);
+    // The hostapd start unknown: a RELOAD could not be kept to once per start, so nobody is disconnected, as before.
+    CHECK(withdrawStartUnknown(hostapd, {"OK\n", "02:00:00:00:00:01\nflags=[AUTH][ASSOC]\n"}) ==
+          evo::UapsdOffer::kBeaconLeft);
     CHECK(hostapd.sent.size() == 2);
-    // A station list that cannot be read is no proof of an empty one.
-    CHECK(withdraw(hostapd, {"OK\n", "!"}) == evo::UapsdOffer::kBeaconLeft && hostapd.sent.size() == 2);
-    CHECK(withdraw(hostapd, {"OK\n", "'STA-FIRST' command failed.\n"}) == evo::UapsdOffer::kBeaconLeft);
+    CHECK(withdrawStartUnknown(hostapd, {"OK\n", "!"}) == evo::UapsdOffer::kBeaconLeft && hostapd.sent.size() == 2);
+    CHECK(withdrawStartUnknown(hostapd, {"OK\n", "", "OK\n"}) == evo::UapsdOffer::kWithdrawn);
+    // The station count of an all_sta reply, MIB lines skipped; -1 for anything that is no station list.
+    CHECK(evo::uapsd::stations("") == 0 && evo::uapsd::stations(" \r\n") == 0);
+    CHECK(evo::uapsd::stations("02:00:00:00:00:01\nflags=[AUTH]\n0A:0b:00:00:00:02\r\naid=2\r\n") == 2);
+    CHECK(evo::uapsd::stations("'STA-FIRST' command failed.\n") == -1);
+    CHECK(evo::uapsd::stations("02:00:00:00:00:0Z\n") == -1 && evo::uapsd::stations("02-00-00-00-00-01\n") == -1);
+    CHECK(strstr(evo::describeUapsdOffer(evo::UapsdOffer::kRejoined), "disconnected once"));
     // The setting refused or not answered: nothing else is sent.
     CHECK(withdraw(hostapd, {"FAIL\n"}) == evo::UapsdOffer::kSetRefused && hostapd.sent.size() == 1);
     CHECK(withdraw(hostapd, {"!"}) == evo::UapsdOffer::kSetRefused && hostapd.sent.size() == 1);
     CHECK(withdraw(hostapd, {"OKAY\n"}) == evo::UapsdOffer::kSetRefused);
     CHECK(withdraw(hostapd, {"OK\n", "", "FAIL\n"}) == evo::UapsdOffer::kReloadRefused);
-    CHECK(withdraw(hostapd, {"OK\n", "", "!"}) == evo::UapsdOffer::kReloadRefused);
+    CHECK(withdraw(hostapd, {"OK\n", "", "!"}) == evo::UapsdOffer::kReloadUnanswered);
     // The beacon already rebuilt for this hostapd start: the setting again, never a second RELOAD (a phone that comes
     // back reopens its Bluetooth link every 400 ms or so while it joins).
+    const StopAfter running = {&hostapd, never};
     hostapd.replies.assign({"OK\n", "", "OK\n"});
     hostapd.sent.clear();
-    CHECK(evo::withdrawUapsd(std::ref(hostapd), true) == evo::UapsdOffer::kAlreadyDone);
+    CHECK(evo::withdrawUapsd(std::ref(hostapd), running, true) == evo::UapsdOffer::kAlreadyDone);
     CHECK(hostapd.sent.size() == 1 && hostapd.sent[0] == "set uapsd_advertisement_enabled 0");
     hostapd.replies.assign({"FAIL\n"});
     hostapd.sent.clear();
-    CHECK(evo::withdrawUapsd(std::ref(hostapd), true) == evo::UapsdOffer::kSetRefused);
+    CHECK(evo::withdrawUapsd(std::ref(hostapd), running, true) == evo::UapsdOffer::kSetRefused);
+    // The service asked to stop: no further hostapd command, whose 5 s each kept the stop waiting (15 s in all, past
+    // the supervisor's 10 s before it kills the service).
+    CHECK(withdraw(hostapd, {"OK\n", "", "OK\n"}, 0) == evo::UapsdOffer::kStopped && hostapd.sent.empty());
+    CHECK(withdraw(hostapd, {"OK\n", "", "OK\n"}, 1) == evo::UapsdOffer::kStopped && hostapd.sent.size() == 1);
+    CHECK(withdraw(hostapd, {"OK\n", "", "OK\n"}, 2) == evo::UapsdOffer::kStopped && hostapd.sent.size() == 2);
+    CHECK(withdraw(hostapd, {"OK\n", "", "OK\n"}, 3) == evo::UapsdOffer::kWithdrawn && hostapd.sent.size() == 3);
+    CHECK(withdraw(hostapd, {"FAIL\n"}, 1) == evo::UapsdOffer::kSetRefused);  // a refusal stays a refusal
+    CHECK(strstr(evo::describeUapsdOffer(evo::UapsdOffer::kStopped), "stopping"));
     // Which hostapd start: its control socket's identity; unknown is never the same start.
     evo::HostapdStart a, b, unknown;
     a.device = b.device = 1;
@@ -81,6 +122,15 @@ void uapsdCases() {
     CHECK(a.same(b) && !a.same(unknown) && !unknown.same(unknown));
     b.inode = 43;  // hostapd started again: a new socket
     CHECK(!a.same(b));
+    // Kept in its file across the service's processes: what is written reads back as the same start.
+    evo::HostapdStart kept;
+    CHECK(evo::formatHostapdStart(a) == "1 42\n" && evo::parseHostapdStart("1 42\n", kept) && kept.same(a));
+    CHECK(evo::formatHostapdStart(unknown).empty());
+    CHECK(!evo::parseHostapdStart("", kept) && !kept.known);
+    CHECK(!evo::parseHostapdStart("1 42", kept) && !evo::parseHostapdStart("1 42\n7 8\n", kept));
+    CHECK(!evo::parseHostapdStart("-1 42\n", kept) && !evo::parseHostapdStart("x 42\n", kept) && !kept.known);
+    CHECK(!evo::parseHostapdStart("1 -42\n", kept) && !kept.known);
+    CHECK(strstr(evo::describeUapsdOffer(evo::UapsdOffer::kReloadUnanswered), "not asked again"));
     CHECK(strstr(evo::describeUapsdOffer(evo::UapsdOffer::kSetRefused), "left on"));
 }
 

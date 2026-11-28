@@ -4,15 +4,17 @@
 #ifndef ENTRY_AAD_HMIAPP_MONO_CLOCK_HPP
 #define ENTRY_AAD_HMIAPP_MONO_CLOCK_HPP
 
+#include <stdint.h>
 #include <time.h>
 
 namespace evo {
 namespace app {
 
-inline long monoMs() {
+// 64 bits: long is 32 bits on the car, and its milliseconds went past 2^31 after 24.8 days of this clock.
+inline int64_t monoMs() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<long>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
 }
 inline long monoSeconds() {
     struct timespec ts;

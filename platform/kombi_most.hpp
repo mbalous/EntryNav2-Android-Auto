@@ -17,7 +17,15 @@
 // 20 ms apart at least, at most eight of them waiting for their answers; an answer is the oldest waiting call's of its
 // function, of its field when the answer starts with one; after a call left unanswered, one at a time until an answer
 // comes back. A refused call stops the drawing until the next Android Auto session; so do five calls in a row left
-// unanswered for 10 s.
+// unanswered for 10 s. An answer that belongs to none of our calls (a refused size read, an answer nobody waits for) is
+// logged once per function and operation, with its first bytes (a text's characters never).
+//
+// Other clusters have other fields: on a MINI F56 (#88) none of the six handles answered a size read. The BMW
+// navigation knows them, so the fields it uses are learned while it guides, from the copies of its calls, and kept in a
+// file (kombi_most_layout.hpp). A learned layout is tried first, the 6WA's when there is none or it does not work. The
+// copies of 82/00 are kept, for listening only, once the registry named a HUD_Terminal whose fields were not usable,
+// and from the start on a car whose file names one. Each stretch of the navigation's calls ends with a [KombiMost]
+// line: its handles, what it did with them, the sizes seen, and the layout kept or what is missing.
 //
 // Seen by another project on F-series cars (Sq00ky's, F20/F30 with the 6WA cluster): for minutes after a cold iDrive
 // start the cluster answers every call, but 1.1 to 7.5 s late. So a call waits 10 s for its answer, and one that came
@@ -34,10 +42,14 @@
 // table, and the MOST registry is asked only after the guidance wanted a picture for ethernetFirstS (the Ethernet
 // KOMBI answers within a quarter of a second). Not while the setting (kombi-off) is off, nor while the BMW navigation
 // guides (its D-Bus state, or another client drawing on the fields): the fields are left to it, uncleared. A marker
-// file says a picture may be up; the next start clears it.
+// file says a picture may be up; the next start clears it. The other way round, once the cluster's guidance fields
+// answered (fieldsReady(), never cleared: the car does not change), the Ethernet arrows stop trying the KOMBI's address
+// for the rest of the run. The first picture's log line says only that no call was refused: whether it shows on the
+// cluster cannot be known here.
 //
-// Threads: onNavStatus() and onSessionEnded() on the session's, setBmwGuiding() and setEthernetSeen() on the Ethernet
-// arrows', everything else on the controller reader's thread, whose vmostd connection this rides on (evo_knob.hpp).
+// Threads: onNavStatus() and onSessionEnded() on the session's, setBmwGuiding(), setEthernetSeen() and fieldsReady() on
+// the Ethernet arrows', everything else on the controller reader's thread, whose vmostd connection this rides on
+// (evo_knob.hpp).
 #ifndef ENTRY_AAD_PLATFORM_KOMBI_MOST_HPP
 #define ENTRY_AAD_PLATFORM_KOMBI_MOST_HPP
 
@@ -51,6 +63,7 @@
 #include <vector>
 
 #include "kombi_guide.hpp"
+#include "kombi_most_layout.hpp"
 #include "kombi_phone.hpp"
 #include "vmost_client.hpp"
 
@@ -63,28 +76,11 @@ const uint16_t kRegistryAddress = 0x0100;  // the NetworkMaster
 const uint16_t kRegistryFkt = 0xA01;       // CentralRegistry
 const uint8_t kGuidanceFblock = 0x52, kGuidanceInstance = 0x00;
 const uint16_t kGuidanceMovedFkt = 0xCFF;  // the cluster tells the navigation the guidance moved (cluster or HUD)
-enum HudFunction : uint16_t {
-    kHudShow = 0x204,     // [field][0|1]
-    kHudSwap = 0x20E,     // [field to hide][field to show]
-    kHudText = 0x210,     // [field][00][UTF-16BE][00 00]
-    kHudLine = 0x219,     // [field][width]
-    kHudColour = 0x21B,   // [field][colour]
-    kHudPolygon = 0x21D,  // [field][index][03 filled][count][x y]...
-    kHudEmpty = 0x220,    // [field]
-    kHudSize = 0xC04,     // [field][01] -> [field][..][width][height]
-};
 // Answers to a StartResultAck (kMostOpStartResultAck, vmost_client.hpp).
 const uint32_t kMostOpError = 0x9, kMostOpResultAck = 0xD, kMostOpErrorAck = 0xF;
 
-// The fields' handles, as on the 6WA cluster.
-struct HudLayout {
-    uint16_t frame, street, distance, unit, pictureA, pictureB;
-    HudLayout();
-};
-const size_t kHudFields = 6;  // handles 1 to 6
-struct FieldSize {
-    uint16_t w, h;
-};
+// The 6WA's fields (HudLayout's default): handles 1 to 6.
+const size_t kHudFields = 6;
 // The six sizes read (handles 1 to 6) fit what is drawn here: a frame, three text fields, two pictures of one size
 // large enough for an arrow. False: why says what did not fit.
 bool layoutFits(const FieldSize sizes[kHudFields], std::string* why);
@@ -165,6 +161,7 @@ bool ethernetNeighbour(const std::string& ip);
 struct MostHudConfig {
     std::string markerFile;      // present: a picture may be up
     std::string offFile;         // present: the arrows are off (the iDrive app's menu), for both clusters
+    std::string layoutFile;      // the fields learned from the BMW navigation, and the cluster's address
     std::string clusterAddress;  // the Ethernet KOMBI, looked for in the neighbour table
     double ethernetFirstS;       // the guidance wants a picture this long before the MOST registry is asked
     GuideSettings guide;
@@ -185,6 +182,8 @@ public:
     // From the Ethernet arrows: the BMW navigation guides; the Ethernet KOMBI took an arrow (for good).
     void setBmwGuiding(bool guiding) { bmw_ = guiding; }
     void setEthernetSeen() { ethernet_ = true; }
+    // To the Ethernet arrows: the cluster's guidance fields answered over MOST, this is an F-series car (for good).
+    bool fieldsReady() const { return fieldsReady_; }
 
     // VmostPeer
     bool wants(const VmostMsgView& m) const override;
@@ -195,9 +194,18 @@ public:
 
     Phase phase() const { return phase_; }
     bool showing() const { return shown_; }
+    const HudLayout& fields() const { return layout_; }
 
 private:
     enum Batch { kNoBatch, kSizesBatch, kRemeasureBatch, kDrawBatch, kClearBatch };
+    enum Trial { kTry6wa, kTryLearned };  // whose fields the size reads are for
+    struct Measured {                     // a field's size, as the cluster last gave it
+        uint16_t field;
+        FieldSize size;
+        bool in;           // answered since we last asked
+        bool ever;         // answered at least once
+        uint32_t askedAt;  // 0: never asked by us
+    };
     struct Waiting {  // a drawing call sent, its answer not in
         HudCall call;
         uint32_t at;
@@ -217,6 +225,7 @@ private:
     void askSizes(bool missingOnly);
     void checkSizes(uint32_t now);
     void onSizes(uint32_t now);
+    void onLearnedSizes();
     bool sizesComplete() const;
     void onGuidanceMoved(const VmostMsgView& m);
     void decide(uint32_t now);
@@ -228,9 +237,20 @@ private:
     void unshadow(VmostPort& port);
     bool ours(const VmostMsgView& m, uint32_t now) const;
     void onAnswer(const VmostMsgView& m, uint32_t now);
+    void oddAnswer(const VmostMsgView& m, const char* what);
     void expire(uint32_t now);
     size_t room() const;
     static bool takeAnswer(std::deque<Waiting>& list, const VmostMsgView& m, Waiting& out);
+    Measured* measure(uint16_t field);  // found or added; null past the limit
+    const Measured* measured(uint16_t field) const;
+    FieldSize picture() const;  // the size the arrow is drawn for
+    bool giveWay(uint32_t now) const;
+    void shadowAll(VmostPort& port);
+    void loadKept();
+    void keep();
+    void learn(uint32_t now, bool closing = false);
+    void try6wa();
+    void tryLearned();
 
     const MostHudConfig config_;
 
@@ -240,28 +260,48 @@ private:
     unsigned messages_, generation_;
     // From the Ethernet arrows
     std::atomic<bool> bmw_, ethernet_;
+    // To the Ethernet arrows: set with layoutVerified_ the first time, never cleared
+    std::atomic<bool> fieldsReady_;
 
     // The controller reader's thread
     uint32_t clock_;  // the last tick's time, for the messages that arrive between ticks
     bool started_;
     uint32_t startedAt_, inputsAt_, settingAt_, arpAt_, messageAt_, wantSince_;
     unsigned seenMessages_, seenGeneration_;
+    unsigned inboxRevision_;  // of the inbox last read
+    bool guiding_;            // what it said: a guidance with a next maneuver,
+    Maneuver next_;           // this one
     bool settingOn_, arpSeen_, ethernetLogged_, allowed_, bmwNow_, has_, wantOn_;
     HudView view_;
     HudPresenter presenter_;
     Phase phase_;
+    bool layoutVerified_;
     bool shadowed_;
     uint16_t address_;
     int lookupTries_;
     uint32_t lookupAt_, retryAt_;
+    bool retryArmed_;
     bool registryIn_;
     std::vector<uint8_t> registry_;
-    FieldSize sizes_[kHudFields];
-    bool sizeIn_[kHudFields];
-    uint32_t sizeAskedAt_[kHudFields];
-    bool sizesWaiting_;  // the size reads went out: answers until sizesAskedAt_ + 10 s
+    std::vector<Measured> measured_;
+    Trial trial_;
+    std::vector<uint16_t> reads_;  // the fields the size reads are for
+    HudLayout layout_;             // the fields drawn on
+    FieldSize keptPicture_;        // the learned layout's picture size; 0x0: not known
+    bool sizesWaiting_;            // the size reads went out: answers until sizesAskedAt_ + 10 s
     uint32_t sizesAskedAt_;
     int sizeTries_;
+    unsigned sizeRefusals_;
+    // The fields the BMW navigation uses (kombi_most_layout.hpp)
+    HudObserver observer_;
+    KeptLayout kept_;
+    bool learnedReady_;   // kept_ holds a layout other than the 6WA's: tried first
+    bool learnedTried_;   // and it was tried this run: not again before a newer one is learned
+    bool sixWaFailed_;    // the 6WA's fields were judged unusable this run
+    bool listening_;      // HUD_Terminal is there, its fields are not usable: the copies stay, to learn them
+    bool watchingEarly_;  // the copies were taken at start, the file naming the cluster
+    unsigned stretchChecks_, summaries_;
+    std::vector<uint32_t> oddLogged_;  // function << 8 | operation of the answers logged
     bool remeasureDue_, remeasuring_, haveMovedTo_;
     uint32_t remeasureAt_;
     std::vector<uint8_t> movedTo_;  // the last place the cluster named for the guidance
@@ -277,9 +317,11 @@ private:
     bool refused_;  // a drawing call was refused since the last tick
     unsigned refusals_, slowAnswers_, lateAnswers_;
     uint32_t lastSendAt_;
+    bool sentOnce_;
     int missed_;
     std::deque<Sent> recent_;  // our last calls: their copies on the shadow are not another client
     uint32_t foreignUntil_;
+    bool foreignActive_;
     bool foreignLogged_;
     bool shown_, unsure_, marked_, staleMarker_, firstAcked_;
     HudView shownView_;

@@ -59,8 +59,9 @@ int xsv_update(xsv_handle h);  // applies the pending settings (opcode 0x15)
 
 int xsv_enable_frame_events(xsv_handle h);
 
-// Bounded blocking wait for an event.
+// Event queue: either a bounded blocking wait, or the fd for a poll() loop.
 int xsv_receive_event(xsv_handle h, int* event_out, int timeout_ms);
+int xsv_get_event_queue_fd(xsv_handle h);
 
 #ifdef __cplusplus
 }

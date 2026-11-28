@@ -64,6 +64,8 @@ int main() {
         "/dev/sdc1 /mnt/sdc1 vfat rw 0 0\n/dev/sdd1 /media/sdd1 ext4 rw 0 0\n");
     assert(sticks.size() == 2 && sticks[0].point == "/media/sda1" && !sticks[0].writable);
     assert(sticks[1].point == "/media/sdb1" && sticks[1].writable);
+    // Octal-escaped spaces in /proc/mounts (e.g. a stick mounted under a label with spaces).
+    assert(evo::findUsbStick("/dev/sda1 /media/MY\\040STICK vfat rw,noexec 0 0\n") == "/media/MY STICK");
     assert(evo::usbStickMounts(car).size() == 1 && evo::usbStickMounts("").empty());
 
     char dir[] = "/tmp/entry-aad-log-copy-XXXXXX";
@@ -106,6 +108,15 @@ int main() {
     }
     // No such stick at all.
     assert(evo::copyLogs(base + "/gone", sources, "20261122-183300", folder) == evo::LogCopyResult::kWriteFailed);
+
+    // A symlink planted as EntryAA-logs on the stick is refused and its target left untouched.
+    {
+        const std::string tricked = base + "/tricked", outside = base + "/outside";
+        assert(mkdir(tricked.c_str(), 0755) == 0 && mkdir(outside.c_str(), 0755) == 0);
+        assert(symlink(outside.c_str(), (tricked + "/EntryAA-logs").c_str()) == 0);
+        assert(evo::copyLogs(tricked, sources, "20261122-183400", folder) == evo::LogCopyResult::kWriteFailed);
+        assert(!exists(outside + "/20261122-183400"));
+    }
 
     // What the car offers: the logs, the report of the last update from a USB stick, then the version, never anything
     // else.

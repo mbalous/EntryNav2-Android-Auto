@@ -4,6 +4,7 @@
 #include "evo_bmw_guidance.hpp"
 
 #include <dbus/dbus.h>
+#include <pthread.h>
 
 #include <cstdlib>
 #include <string>
@@ -21,6 +22,11 @@ const char* const kSessionBus = "unix:path=/tmp/session_bus_socket";
 const int kTimeoutMs = 1500;
 std::string g_bus;  // empty on the car: its session bus
 
+pthread_once_t g_threadsOnce = PTHREAD_ONCE_INIT;
+void initThreadsOnce() {
+    dbus_threads_init_default();
+}
+
 DBusConnection* g_conn = nullptr;
 
 void closeBus() {
@@ -32,6 +38,15 @@ void closeBus() {
     g_conn = nullptr;
 }
 
+void drainQueued() {
+    if (!g_conn) {
+        return;
+    }
+    while (DBusMessage* queued = dbus_connection_pop_message(g_conn)) {
+        dbus_message_unref(queued);
+    }
+}
+
 bool openBus() {
     if (g_conn && dbus_connection_get_is_connected(g_conn)) {
         return true;
@@ -40,17 +55,29 @@ bool openBus() {
     DBusError e;
     dbus_error_init(&e);
     g_conn = dbus_connection_open_private(g_bus.empty() ? kSessionBus : g_bus.c_str(), &e);
-    if (g_conn && !dbus_bus_register(g_conn, &e)) {
-        closeBus();
+    if (g_conn) {
+        // Set before dbus_bus_register so an immediate disconnect never terminates the daemon.
+        dbus_connection_set_exit_on_disconnect(g_conn, FALSE);
+        if (!dbus_bus_register(g_conn, &e)) {
+            closeBus();
+        }
     }
     dbus_error_free(&e);
     if (!g_conn) {
         return false;
     }
-    dbus_connection_set_exit_on_disconnect(g_conn, FALSE);
+    drainQueued();
     return true;
 }
 }  // namespace
+
+void initBmwGuidanceThreading() {
+    pthread_once(&g_threadsOnce, initThreadsOnce);
+}
+
+void closeBmwGuidance() {
+    closeBus();
+}
 
 void setGuidanceBusForTest(const char* address) {
     closeBus();
@@ -58,8 +85,7 @@ void setGuidanceBusForTest(const char* address) {
 }
 
 int probeBmwGuidance() {
-    static bool threads = (dbus_threads_init_default(), true);  // libdbus is also used by other threads
-    (void)threads;
+    initBmwGuidanceThreading();
     if (!openBus()) {
         return -1;
     }
@@ -72,6 +98,7 @@ int probeBmwGuidance() {
     DBusMessage* r = dbus_connection_send_with_reply_and_block(g_conn, m, kTimeoutMs, &e);
     dbus_message_unref(m);
     dbus_error_free(&e);
+    drainQueued();
     if (!r) {
         return -1;
     }

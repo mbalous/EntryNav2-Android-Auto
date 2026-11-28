@@ -12,7 +12,8 @@ namespace kombi {
 
 namespace {
 
-// Valid UTF-8 without control characters (a tab is allowed): how a string is told from a message.
+// Valid UTF-8 without control characters (a tab is allowed): how a string is told from a message. Valid: each
+// character in its shortest form, no UTF-16 surrogate (U+D800 to U+DFFF), nothing past U+10FFFF.
 bool looksLikeText(const uint8_t* p, size_t n) {
     if (n == 0) {
         return false;
@@ -28,10 +29,16 @@ bool looksLikeText(const uint8_t* p, size_t n) {
             if (width == 0 || width > n - i) {
                 return false;
             }
+            uint32_t cp = lead & (0x7F >> width);
             for (size_t k = 1; k < width; ++k) {
                 if ((p[i + k] & 0xC0) != 0x80) {
                     return false;
                 }
+                cp = cp << 6 | (p[i + k] & 0x3F);
+            }
+            static const uint32_t kLeast[] = {0, 0, 0x80, 0x800, 0x10000};  // by width: shorter is an overlong form
+            if (cp < kLeast[width] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                return false;
             }
         }
         i += width;
@@ -76,12 +83,12 @@ public:
         return true;
     }
 
-    // Every length-delimited occurrence of the field, up to the end of the message or a malformed field.
-    std::vector<Fields> every(uint32_t number) const {
+    // The length-delimited occurrences of the field, up to the end of the message, a malformed field, or `most` found.
+    std::vector<Fields> every(uint32_t number, size_t most) const {
         std::vector<Fields> found;
         aa::pb::FieldReader reader(data_, size_);
         aa::pb::Field f;
-        while (present_ && reader.next(f)) {
+        while (present_ && found.size() < most && reader.next(f)) {
             if (f.number == number && f.type == aa::pb::kBytes) {
                 found.push_back(Fields(f.data, f.size));
             }
@@ -108,6 +115,11 @@ private:
     bool present_;
 };
 
+// The lanes of a step read, and the directions of a lane: a road has a few, and a row of more than kMaxLanes
+// (kombi_display.hpp) is never drawn.
+const size_t kMostLanes = 16;
+const size_t kMostDirections = 16;  // LaneDirection.Shape has 10 values
+
 // NavigationState: its first step is the next maneuver. False when that step is missing.
 bool readState(const Fields& state, Maneuver& m) {
     const Fields step = state.message(1);
@@ -128,11 +140,11 @@ bool readState(const Fields& state, Maneuver& m) {
     }
     m.road = step.message(2).text(1);
     m.cue = step.message(4).text(1);
-    const std::vector<Fields> lanes = step.every(3);
+    const std::vector<Fields> lanes = step.every(3, kMostLanes);
     for (size_t i = 0; i < lanes.size(); ++i) {
-        const std::vector<Fields> directions = lanes[i].every(1);
-        PhoneLane lane;
-        for (size_t k = 0; k < directions.size(); ++k) {
+        const std::vector<Fields> directions = lanes[i].every(1, kMostDirections + 1);
+        PhoneLane lane;  // more directions than any lane has: left empty, so that no lane row is drawn from it
+        for (size_t k = 0; k < directions.size() && directions.size() <= kMostDirections; ++k) {
             int64_t shape = 0, highlighted = 0;
             directions[k].varint(1, shape);
             directions[k].varint(2, highlighted);
@@ -181,7 +193,7 @@ void readTurn(const Fields& turn, Maneuver& m) {
 void readPosition(const Fields& position, Maneuver& m) {
     const Fields distance = position.message(1).message(1);
     int64_t value;
-    if (distance.varint(1, value)) {
+    if (distance.varint(1, value) && value >= 0 && value <= kFarthestMetres) {
         m.hasMetres = true;
         m.metres = value;
     }
@@ -208,7 +220,7 @@ int64_t wholeFromThousandths(int64_t thousandths) {
 // one decimal for the units shown with tenths, none otherwise.
 void readTurnDistance(const Fields& event, Maneuver& m) {
     int64_t value;
-    if (event.varint(1, value)) {
+    if (event.varint(1, value) && value >= 0 && value <= kFarthestMetres) {
         m.hasMetres = true;
         m.metres = value;
     }
@@ -267,12 +279,15 @@ bool NavInbox::keep(uint16_t id, const uint8_t* body, size_t size) {
         default:
             return false;
     }
-    slot->assign(body, body + size);
+    slot->assign(body, body + (size < kMaxNavBody ? size : kMaxNavBody));
+    ++revision_;
     return true;
 }
 
 void NavInbox::clear() {
+    const unsigned next = revision_ + 1;
     *this = NavInbox();
+    revision_ = next;
 }
 
 bool NavInbox::guiding() const {

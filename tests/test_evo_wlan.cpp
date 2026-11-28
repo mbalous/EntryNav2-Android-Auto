@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Jiraiya43
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Hotspot request (evo_wlan): exact MOST bytes, "only when off", never "off", and behaviour without vmostd/answers.
-// Also the vMOST loader both of its users share (vmost_client): daemon socket, library, functions.
+// Also the vMOST loader its users share (vmost_client): daemon socket, library, functions, and a connection the
+// library drops itself, never closed twice.
 
 // Uses tests/fake_vmostclient.c in place of the HU's libvmostclient.so.1 (no car, no network).
 #include <stdio.h>
@@ -39,9 +40,23 @@ static std::string readAll(const char* p) {
     return s;
 }
 
+static bool has(const std::string& s, const char* part) {
+    return s.find(part) != std::string::npos;
+}
+
+static size_t count(const std::string& s, const char* part) {
+    size_t n = 0;
+    for (size_t at = s.find(part); at != std::string::npos; at = s.find(part, at + 1)) {
+        ++n;
+    }
+    return n;
+}
+
+static void noMessage(void*, void*) {}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: test-evo-wlan <fake-libvmostclient.so>\n");
+        fprintf(stderr, "usage: test-evo-wlan <fake-libvmostclient.so> [the same without 'connected']\n");
         return 2;
     }
     uint8_t p[3];
@@ -71,14 +86,80 @@ int main(int argc, char** argv) {
     {  // The loader: library missing, library without the vMOST functions, then every function resolved.
         evo::VmostClient v;
         evo::setVmostForTest(sock.c_str(), "/nonexistent/libvmostclient.so.1");
-        CHECK(v.load() == evo::VmostClient::kNoLibrary && !v.error().empty() && !v.connect);
+        CHECK(v.load() == evo::VmostClient::kNoLibrary && !v.error().empty() && !v.loaded());
         evo::setVmostForTest(sock.c_str(), "libc.so.6");
-        CHECK(v.load() == evo::VmostClient::kNoSymbols);
+        CHECK(v.load() == evo::VmostClient::kNoSymbols && !v.loaded());
         evo::setVmostForTest(sock.c_str(), argv[1]);
-        CHECK(v.load() == evo::VmostClient::kLoaded && v.connect && v.shadowRegister && v.shadowDeregister &&
-              v.fileDescriptorGet && v.processMessages && v.disconnect && v.send);
+        CHECK(v.load() == evo::VmostClient::kLoaded && v.loaded() && !v.linked());
         v.unload();
-        CHECK(evo::kVmostFunctionCount == 7);
+        CHECK(!v.loaded() && evo::kVmostFunctionCount == 7);
+    }
+
+    // The library drops the connection itself after a failed read (as the car's does): neither a deregistration nor
+    // a disconnection follows it, which would free its queue twice (the fake aborts then, as glibc on the car).
+    {
+        unlink(log.c_str());
+        setenv("FAKE_VMOST_GONE_AFTER", "1", 1);
+        setenv("FAKE_VMOST_GONE_HOW", "broken", 1);
+        evo::VmostClient v;
+        CHECK(v.load() == evo::VmostClient::kLoaded && v.connect(noMessage, nullptr, 0) == 0 && v.linked());
+        CHECK(v.shadowRegister(0xA0, 0x01) == 0);
+        evo::VmostMsgOut m;
+        static const uint8_t none[4] = {0, 0, 0, 0};
+        evo::buildVmostGet(m, 0xA0, 0x01, 0xC10, none);
+        CHECK(v.send(&m) == 0 && v.linked());  // taken; vmostd leaves right after
+        CHECK(v.processMessages() != 0 && !v.linked());
+        CHECK(v.shadowDeregister(0xA0, 0x01) == evo::VmostClient::kNotConnected);
+        CHECK(v.shadowRegister(0xA0, 0x01) == evo::VmostClient::kNotConnected);
+        CHECK(v.send(&m) == evo::VmostClient::kNotConnected);  // the library's own answer
+        CHECK(v.disconnect() == 0 && !v.linked());
+        v.unload();
+        const std::string l = readAll(log.c_str());
+        CHECK(count(l, "disconnect\n") == 1 && has(l, "the library disconnects itself (a read failed)\n"));
+        CHECK(!has(l, "deregister") && count(l, "\nregister ") == 1);
+        // Hung up: the library still holds its side, which is let go once; nothing asked of vmostd any more.
+        unlink(log.c_str());
+        setenv("FAKE_VMOST_GONE_HOW", "hangup", 1);
+        CHECK(v.load() == evo::VmostClient::kLoaded && v.connect(noMessage, nullptr, 0) == 0);
+        CHECK(v.send(&m) == 0 && v.linked() && v.disconnect() == 0 && !v.linked() && v.disconnect() == 0);
+        CHECK(v.shadowDeregister(0xA0, 0x01) == evo::VmostClient::kNotConnected);  // after our own disconnection
+        v.unload();
+        CHECK(count(readAll(log.c_str()), "disconnect\n") == 1);
+        unsetenv("FAKE_VMOST_GONE_AFTER");
+        unsetenv("FAKE_VMOST_GONE_HOW");
+    }
+    if (argc > 2) {  // A build of the library without 'connected': VmostClient follows its own calls, as before.
+        unlink(log.c_str());
+        evo::setVmostForTest(sock.c_str(), argv[2]);
+        evo::VmostClient v;
+        CHECK(v.load() == evo::VmostClient::kLoaded && !v.linked() && v.connect(noMessage, nullptr, 0) == 0);
+        CHECK(v.linked() && v.shadowRegister(0xA0, 0x01) == 0 && v.shadowDeregister(0xA0, 0x01) == 0);
+        CHECK(v.disconnect() == 0 && !v.linked() && v.disconnect() == 0);
+        v.unload();
+        const std::string l = readAll(log.c_str());
+        CHECK(count(l, "disconnect\n") == 1 && has(l, "deregister a0.01\n"));
+        evo::setVmostForTest(sock.c_str(), argv[1]);
+    }
+
+    // vmostd leaves once it took the state read: the switch-on is not asked, nothing is deregistered, and the
+    // connection is let go once (ours after a hang-up, the library's own after a broken read).
+    {
+        const char* const ways[] = {"hangup", "broken"};
+        for (size_t i = 0; i < sizeof(ways) / sizeof(ways[0]); ++i) {
+            unlink(log.c_str());
+            setenv("FAKE_WLAN_STATE", "0", 1);
+            setenv("FAKE_VMOST_GONE_AFTER", "1", 1);
+            setenv("FAKE_VMOST_GONE_HOW", ways[i], 1);
+            CHECK(!evo::requestWlanAccessPoint(1000, &r) && r.connected && !r.sent && r.stateBefore == -1);
+            const std::string l = readAll(log.c_str());
+            if (!has(l, "vmostd leaves") || has(l, "c11") || has(l, "deregister") || count(l, "disconnect\n") != 1) {
+                fprintf(stderr, "FAIL hotspot, vmostd gone (%s):\n%s", ways[i], l.c_str());
+                return 1;
+            }
+        }
+        unsetenv("FAKE_VMOST_GONE_AFTER");
+        unsetenv("FAKE_VMOST_GONE_HOW");
+        unlink(log.c_str());
     }
 
     // Hotspot off: Get, then the CarPlay-switch request, ResultAck and state 1 afterwards.
@@ -113,6 +194,6 @@ int main(int argc, char** argv) {
     rmdir(dir);
     puts(
         "PASS hotspot : A0.01.C10 Get puis A0.01.C11 StartResultAck 57 41 01 seulement si eteint, jamais 'eteindre', "
-        "rien sans vmostd, envoi unique si wland ne repond pas");
+        "rien sans vmostd, envoi unique si wland ne repond pas, connexion lachee une seule fois si vmostd part");
     return 0;
 }

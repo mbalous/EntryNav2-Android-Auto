@@ -207,10 +207,33 @@ int roundaboutExit(const Maneuver& m) {
     return m.exitNumber >= 2 && m.exitNumber <= kHighestExit ? m.exitNumber : 0;
 }
 
+namespace {
+
+// From 0 to kFarthestMetres; NaN fails both comparisons.
+bool usableMetres(double metres) {
+    return metres >= 0.0 && metres <= static_cast<double>(kFarthestMetres);
+}
+
+// Digits with their separators, as the phone writes a short distance ("0.3", "1,5", "600"): what is shown as sent.
+bool plainNumber(const std::string& text) {
+    bool digit = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (c >= '0' && c <= '9') {
+            digit = true;
+        } else if (c != '.' && c != ',') {
+            return false;
+        }
+    }
+    return digit;
+}
+
+}  // namespace
+
 bool metresToManeuver(const Maneuver& m, double& metres) {
     if (m.hasMetres) {
         metres = static_cast<double>(m.metres);
-        return true;
+        return usableMetres(metres);
     }
     double perUnit;
     switch (m.distanceUnit) {
@@ -247,7 +270,7 @@ bool metresToManeuver(const Maneuver& m, double& metres) {
         return false;
     }
     metres = value * perUnit;
-    return true;
+    return usableMetres(metres);  // strtod also reads "inf", "nan", "-5" and "1e300"
 }
 
 void milesAndFeet(double metres, std::string& text, int& displayUnit) {
@@ -297,7 +320,8 @@ void inPhoneUnits(double metres, int phoneUnit, std::string& text, int& displayU
 }
 
 void shortDistance(const Maneuver& m, size_t maxChars, std::string& text, int& displayUnit) {
-    if (utf8Length(m.distanceText) <= maxChars && clusterUnit(m.distanceUnit) != kNoClusterUnit) {
+    if (utf8Length(m.distanceText) <= maxChars && clusterUnit(m.distanceUnit) != kNoClusterUnit &&
+        plainNumber(m.distanceText)) {
         text = m.distanceText;
         displayUnit = m.distanceUnit;
         return;

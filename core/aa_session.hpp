@@ -126,6 +126,7 @@ private:
     bool sendSealed(uint8_t channel, const Message& message, uint8_t flags = frame::kSealed);
     bool askPhone(uint64_t silentMs);  // our own ping to a silent phone; false: not possible yet
     Received receive(uint8_t& channel, Message& wire, Message& plain, Message& message);
+    void notePlain(uint8_t channel, const Message& message, bool beforeTls);  // a clear message: logged once
 
     // Car input (aa_session.cpp).
     void sendCarInput();
@@ -139,7 +140,7 @@ private:
     bool dispatch(uint8_t channel, const Message& message);
     bool onControl(uint16_t id, const Message& message);
     void onVersion(const Message& message);
-    void onTlsHandshake(const Message& message);
+    bool onTlsHandshake(const Message& message);
     void onDiscovery();
     void onAudioFocus(const Message& message);
     void onNavigationFocus(const Message& message);
@@ -181,23 +182,42 @@ private:
     std::atomic<bool> goodbye_;  // set on the session thread, read by the ended callback
     // Session thread only.
     uint64_t lastReceivedMs_;  // when the phone last sent anything, 0 before its first byte
+    uint64_t connectedMs_;     // when the session thread started on this connection
     bool givenUp_;             // giveUp() was called
     TlsClient tls_;
     MessageAssembler assembler_;
     bool videoReady_;  // the phone set the video channel up: a focus can go
     bool projected_;   // the last video focus sent was FOCUSED
     KeyframeRequest keyframe_;
-    unsigned unreadableInARow_;   // encrypted frames that did not decrypt since the last one that did
-    bool sendBroken_;             // a send failed: nothing more goes out, the session ends (sendExactly)
-    uint32_t mediaSessions_[32];  // per channel, the session id of its start indication, echoed in our acks
-    uint32_t mediaMessages_;      // media messages received, every channel
-    uint32_t audioMessages_[2];   // guidance (8), media (9)
-    uint32_t microphoneChunks_;   // sent since the phone opened the microphone
+    unsigned unreadableInARow_;    // encrypted frames that did not decrypt since the last one that did
+    bool sendBroken_;              // a send failed: nothing more goes out, the session ends (sendExactly)
+    uint32_t mediaSessions_[256];  // per channel, the session id of its start indication, echoed in our acks
+    uint32_t mediaMessages_;       // media messages received, every channel
+    uint32_t audioMessages_[2];    // guidance (8), media (9)
+    uint32_t microphoneChunks_;    // sent since the phone opened the microphone
     // Log throttles, per session.
     unsigned framesSeen_[256];
     unsigned keysLogged_, movesLogged_, navigationLogged_, pings_;
     unsigned pingsAsked_, pingAnswers_;  // our own pings, and the phone's answers to them
     uint32_t playbackState_;
+    // Messages other than pings that came in clear after TLS (notePlain), and the first kinds of them (channel << 16
+    // | id), each logged once.
+    static const unsigned kPlainKindsLogged = 16;
+    unsigned plainAfterTls_;
+    unsigned refusedBeforeTls_;  // messages in clear before TLS, other than the handshake's: refused
+    uint32_t plainKinds_[kPlainKindsLogged];
+    unsigned plainKindCount_;
+    bool plainKindsFull_;
+    // This session took the phone's VersionResponse and started TLS with it: a second one is ignored.
+    bool versionTaken_;
+    // Reusable wire buffers (session thread only): drains the kernel TCP buffer in chunks instead of 4-byte header
+    // syscalls, and avoids per-ack/per-input heap allocations on the Wi-Fi hot path.
+    static const size_t kRxBufferSize = 32u * 1024u;
+    static const size_t kMaxRetainedTx = 64u * 1024u;
+    std::vector<uint8_t> rxBuf_;
+    size_t rxPos_, rxEnd_;
+    std::vector<uint8_t> txRecords_;
+    std::vector<uint8_t> txFrame_;
 };
 
 }  // namespace aa

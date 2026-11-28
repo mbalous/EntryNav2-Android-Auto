@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Jiraiya43
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // hmiapp/hold_machine.cpp: which iDrive event and which control message, scenario by scenario, against a recorder.
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -8,7 +9,12 @@
 #include <vector>
 
 #include "../hmiapp/hold_machine.hpp"
+#include "../hmiapp/mono_clock.hpp"
 #include "../hmiapp/rhmi_ids.hpp"
+
+// The milliseconds of the app's monotonic clock reach 2^31 after 24.8 days: never in a long, 32 bits on the car (code
+// review of 25/11, M11).
+static_assert(sizeof(evo::app::monoMs()) == sizeof(int64_t), "monoMs() must not wrap on the car");
 
 namespace {
 
@@ -41,7 +47,7 @@ int g_failures = 0;
 
 class Recorder : public HoldIo {
 public:
-    Recorder() : appKey(false), appKeyAt(0), now(nullptr), reads(0) {}
+    Recorder() : appKey(false), appKeyAt(0), hardKey(false), hardKeyAt(0), now(nullptr), reads(0) {}
     void triggerEvent(unsigned event) override {
         char text[16];
         snprintf(text, sizeof(text), "event %u", event);
@@ -65,12 +71,21 @@ public:
         appKey = false;
         out.push_back("app key removed");
     }
+    bool hardKeyAge(long* seconds) override {
+        if (!hardKey) {
+            return false;
+        }
+        *seconds = *now - hardKeyAt;
+        return true;
+    }
 
     std::vector<std::string> out;
     std::vector<std::string> logs;
     ServiceState service;
     bool appKey;
-    long appKeyAt;    // when the service wrote the file, on the car's clock below
+    long appKeyAt;  // when the service wrote the file, on the car's clock below
+    bool hardKey;   // the service's file of the last key left to iDrive
+    long hardKeyAt;
     const long* now;  // that clock
     int reads;
 };
@@ -79,8 +94,8 @@ public:
 struct Car {
     Recorder io;
     HoldMachine hold;
-    long now;  // seconds since the head unit started
-    long ms;   // the same clock, milliseconds
+    long now;    // seconds since the head unit started
+    int64_t ms;  // the same clock, milliseconds (hmiapp/mono_clock.hpp)
 
     Car() : hold(io), now(1000), ms(50000) { io.now = &now; }
 
@@ -115,6 +130,12 @@ struct Car {
         blankVisible(false);
     }
     void call(bool on) { hold.callChanged(on, now); }
+    void screen(int visibleContext) { hold.screenChanged(visibleContext); }
+    // iDrive raises its FM station page by itself: the screen is reported, then the blank state loses the focus.
+    void radioPage() {
+        screen(evo::app::kRadioStationScreen);
+        blankLeft();
+    }
     bool gear(int value) { return hold.gearChanged(value, now); }
 
     std::string take() {
@@ -854,6 +875,119 @@ void appKeys() {
     }
 }
 
+// #138: on an X1 F48 once moving, iDrive raised its FM station page by itself whenever the tuner followed the station
+// to another frequency, and Android Auto stepped aside as for a hard key.
+void radioPage() {
+    {  // no key: back to the blank state at the first poll, no step aside
+        Car c;
+        heldOnBlank(c);
+        c.radioPage();
+        CHECK_OUT(c, "");
+        c.poll();
+        CHECK_OUT(c, "event 52");
+        CHECK(c.logged("hold: iDrive raised its radio page (screen 523) without a key: back to state 13, 1 of 4"));
+        c.blankShown();
+        c.polls(5);
+        CHECK_OUT(c, "");
+        CHECK(c.hold.holding());
+    }
+    {  // a key left to iDrive 2 s before: the driver's choice, the hard key step aside
+        Car c;
+        heldOnBlank(c);
+        c.io.hardKey = true;
+        c.io.hardKeyAt = c.now - 2;
+        c.radioPage();
+        c.poll();
+        CHECK_OUT(c, "");
+        c.poll();
+        CHECK_OUT(c, "hide");
+        CHECK(c.logged("radio page 3 s after a key left to iDrive"));
+    }
+    {  // a key file older than 6 s does not explain it
+        Car c;
+        heldOnBlank(c);
+        c.io.hardKey = true;
+        c.io.hardKeyAt = c.now - 7;
+        c.radioPage();
+        c.poll();
+        CHECK_OUT(c, "event 52");
+    }
+    {  // another iDrive screen without a key (a warning, BMW navigation): still the step aside
+        Car c;
+        heldOnBlank(c);
+        c.screen(300);
+        c.blankLeft();
+        c.poll();
+        CHECK_OUT(c, "");
+        c.poll();
+        CHECK_OUT(c, "hide");
+    }
+    {  // no screen reported (a car whose iDrive does not publish it): as before
+        Car c;
+        heldOnBlank(c);
+        c.blankLeft();
+        c.poll();
+        c.poll();
+        CHECK_OUT(c, "hide");
+    }
+    {  // the radio page seen before the blank state showed is forgotten: a later departure is a hard key
+        Car c;
+        connected(c);
+        c.menu(true);
+        c.screen(evo::app::kRadioStationScreen);
+        c.hold.showAndHold("Open row", c.now);
+        c.blankShown();
+        c.overlay(1);
+        c.poll();
+        CHECK_OUT(c, "show, event 52");
+        c.blankLeft();
+        c.poll();
+        CHECK_OUT(c, "");
+        c.poll();
+        CHECK_OUT(c, "hide");
+    }
+    {  // 4 times in 10 s, then Android Auto steps aside; 10 s later it is won back again
+        Car c;
+        heldOnBlank(c);
+        for (int i = 0; i < 4; ++i) {
+            c.radioPage();
+            c.poll();
+            CHECK_OUT(c, "event 52");
+            c.blankShown();
+            c.poll();
+        }
+        c.radioPage();  // the 5th, 8 s after the first
+        c.poll();
+        CHECK_OUT(c, "");
+        CHECK(c.logged("radio page again, 4 times in 10 s: Android Auto steps aside this time"));
+        c.poll();
+        CHECK_OUT(c, "hide");
+    }
+    {  // the window starts over
+        Car c;
+        heldOnBlank(c);
+        for (int i = 0; i < 4; ++i) {
+            c.radioPage();
+            c.poll();
+            c.blankShown();
+            c.poll();
+        }
+        CHECK_OUT(c, "event 52, event 52, event 52, event 52");
+        c.now += 10;
+        c.radioPage();
+        c.poll();
+        CHECK_OUT(c, "event 52");
+    }
+    {  // during a call iDrive's screens are not fought
+        Car c;
+        heldOnBlank(c);
+        c.call(true);
+        c.radioPage();
+        c.polls(3);
+        CHECK_OUT(c, "");
+    }
+}
+
 void hardKeys() {
     {  // MENU: confirmed on a second poll, Android Auto steps aside; no event when it does
         Car c;
@@ -927,6 +1061,103 @@ void stepsAsideByItself() {
         c.poll();
         CHECK_OUT(c, "event 51");
         CHECK(c.logged("hold: OPTION: event 51 -> Android Auto menu"));
+    }
+}
+
+// OPTION under Android Auto: the service steps aside, iDrive opens its option panel over the blank state (still
+// visible, no longer focused), and the app asks for its menu. iDrive ignores that event under its panel (MINI F54,
+// #137); BACK then gives the focus back to the blank state.
+void optionPanel(Car& c) {
+    heldOnBlank(c);
+    c.blankFocus(false);
+    c.overlay(0);
+    c.poll();
+    CHECK_OUT(c, "event 51");
+    CHECK(c.logged("hold: OPTION: event 51 -> Android Auto menu"));
+}
+
+void optionPanelThenBack() {
+    {  // BACK closes the panel: Android Auto back at once, not a blank page
+        Car c;
+        optionPanel(c);
+        c.polls(12);  // the event is ignored for as long as the panel is open: nothing more meanwhile
+        CHECK_OUT(c, "");
+        c.blankFocus(true);  // BACK, tilt left or a touch at the left edge
+        CHECK_OUT(c, "show");
+        CHECK(c.logged("hold: OPTION panel closed, iDrive back on the Android Auto page"));
+        c.overlay(1);
+        c.poll();
+        CHECK_OUT(c, "");  // the blank state is already shown and focused: nothing more
+        CHECK(c.hold.holding() && c.hold.blankShown());
+        c.polls(5);
+        CHECK_OUT(c, "");
+        c.blankVisible(false);
+        c.menu(true);              // the next BACK
+        CHECK_OUT(c, "event 52");  // held again: back to the blank state
+    }
+    {  // event 51 performed (a BMW): our menu, as before; its focus cancels the show
+        Car c;
+        optionPanel(c);
+        c.menu(true);
+        CHECK_OUT(c, "");
+        c.menu(false);
+        c.blankFocus(true);
+        c.polls(3);
+        CHECK_OUT(c, "");
+    }
+    {  // a choice in the panel took iDrive elsewhere: Android Auto stays aside
+        Car c;
+        optionPanel(c);
+        c.blankVisible(false);
+        c.polls(3);
+        CHECK_OUT(c, "");
+        c.blankFocus(true);
+        c.polls(3);
+        CHECK_OUT(c, "");
+        CHECK(!c.hold.holding());
+    }
+    {  // the phone's exit icon, then an iDrive popup that opens and closes over the blank state: no show
+        Car c;
+        heldOnBlank(c);
+        c.overlay(0);
+        c.poll();
+        CHECK_OUT(c, "event 50");
+        c.blankFocus(false);
+        c.poll();
+        c.blankFocus(true);
+        c.polls(3);
+        CHECK_OUT(c, "");
+    }
+    {  // a call came meanwhile: iDrive's call screen is not fought
+        Car c;
+        optionPanel(c);
+        c.call(true);
+        c.blankFocus(true);
+        c.polls(3);
+        CHECK_OUT(c, "");
+        c.call(false);
+        c.blankFocus(false);
+        c.blankFocus(true);  // the panel already counted once: no show later either
+        CHECK_OUT(c, "");
+    }
+    {  // reverse gear meanwhile: the camera wins
+        Car c;
+        optionPanel(c);
+        CHECK(c.gear(2));
+        c.blankFocus(true);
+        c.polls(3);
+        CHECK_OUT(c, "");
+    }
+    {  // the phone gone meanwhile: our menu, accepted now that the panel is closed, instead of a blank page
+        Car c;
+        optionPanel(c);
+        c.service("running", 42, 0);
+        c.blankFocus(true);
+        CHECK_OUT(c, "event 51");
+        CHECK(c.logged("hold: OPTION panel closed, no phone connected (running): event 51 -> Android Auto menu"));
+        c.menu(true);
+        c.polls(3);
+        CHECK_OUT(c, "");
     }
 }
 
@@ -1083,8 +1314,184 @@ void recallOverIdriveScreen() {
     }
 }
 
+// Our own popup only serves to ask for the blank state under it at the next poll. Seen in the code review (audit of
+// 25/11, H10): iDrive showed the blank state under it before that poll, the popup stayed open, and the blank state,
+// visible without the focus (our popup had it), was taken for an iDrive popup: "popup 1", Android Auto hidden behind an
+// empty popup that nothing closed.
+static void popupOverIdriveScreen(Car& c) {
+    connected(c);
+    c.overlay(1);  // Android Auto came up by itself over an iDrive screen
+    c.polls(2);
+    CHECK_OUT(c, "event 51, own popup 1");
+}
+void ownPopupClosed() {
+    {  // the blank state shows under our popup before the next poll: closed at once, never an iDrive popup
+        Car c;
+        popupOverIdriveScreen(c);
+        c.blankVisible(true);
+        CHECK_OUT(c, "own popup 0");
+        c.polls(30);
+        CHECK_OUT(c, "");  // held: no "popup 1", no event while the blank state has not had the focus
+        CHECK(c.hold.holding() && c.hold.blankShown() && !c.hold.popupPeek());
+        c.blankFocus(true);
+        c.blankFocus(false);  // from now on a lost focus is an iDrive popup again
+        c.polls(2);
+        CHECK_OUT(c, "popup 1");
+    }
+    {  // the blank state takes the focus under it
+        Car c;
+        popupOverIdriveScreen(c);
+        c.blankFocus(true);
+        CHECK_OUT(c, "own popup 0");
+        c.polls(10);
+        CHECK_OUT(c, "");
+        CHECK(c.hold.holding() && c.hold.blankShown() && !c.hold.popupPeek());
+    }
+    {  // our menu takes the focus: closed, then the blank state at once
+        Car c;
+        popupOverIdriveScreen(c);
+        c.menu(true);
+        CHECK_OUT(c, "own popup 0, event 52");
+        c.blankShown();
+        c.polls(10);
+        CHECK_OUT(c, "");
+    }
+    {  // a call: not left over iDrive's call screen; tried again once the call is over
+        Car c;
+        popupOverIdriveScreen(c);
+        c.call(true);
+        c.poll();
+        CHECK_OUT(c, "own popup 0");
+        c.polls(10);
+        CHECK_OUT(c, "");
+        c.call(false);
+        c.poll();
+        CHECK_OUT(c, "event 52");  // the call ended
+        c.poll();
+        CHECK_OUT(c, "own popup 1");
+        c.poll();
+        CHECK_OUT(c, "event 52, own popup 0");
+        c.blankVisible(true);
+        c.polls(5);
+        CHECK_OUT(c, "");
+    }
+    {  // reverse gear: not left over the camera
+        Car c;
+        popupOverIdriveScreen(c);
+        CHECK(c.gear(evo::app::kReverseGear));
+        c.poll();
+        CHECK_OUT(c, "own popup 0");
+        c.overlay(0);  // Android Auto steps aside for the camera
+        c.polls(5);
+        CHECK_OUT(c, "");
+    }
+    {  // Start while it is open (Android Auto asked to the front): closed
+        Car c;
+        popupOverIdriveScreen(c);
+        c.hold.requestShow();
+        CHECK_OUT(c, "own popup 0, show");
+    }
+    {  // waiting aside: a call while it is open closes it; afterwards our menu is asked for again, then the popup
+        Car c;
+        connected(c);
+        c.overlay(2);
+        c.polls(2);
+        CHECK_OUT(c, "event 51, own popup 1");
+        c.call(true);
+        c.poll();
+        CHECK_OUT(c, "own popup 0");
+        c.polls(10);
+        CHECK_OUT(c, "");
+        c.call(false);
+        c.polls(3);
+        CHECK_OUT(c, "event 51, own popup 1, event 52, own popup 0, show");
+    }
+    {  // waiting aside: the blank state shows under it before the next poll; Android Auto comes up on it
+        Car c;
+        connected(c);
+        c.overlay(2);
+        c.polls(2);
+        CHECK_OUT(c, "event 51, own popup 1");
+        c.blankVisible(true);
+        CHECK_OUT(c, "own popup 0, show");
+        c.overlay(1);
+        c.polls(10);
+        CHECK_OUT(c, "");  // held, no popup peek, the popup not closed twice
+        CHECK(c.hold.holding() && c.hold.blankShown() && !c.hold.popupPeek());
+    }
+}
+
+// The clocks (code review of 25/11, M11): the files' ages come from the car's date, which can move back after the
+// service wrote them; the menu's milliseconds go past 2^31 after 24.8 days of the monotonic clock.
+void clockAndDates() {
+    {  // an app key file dated an hour after now: its age is unknown, not recent; a hard key steps aside as without it
+        Car c;
+        heldOnBlank(c);
+        c.io.appKey = true;
+        c.io.appKeyAt = c.now + 3600;
+        c.blankLeft();
+        CHECK_OUT(c, "");
+        c.poll();
+        CHECK_OUT(c, "");
+        c.poll();
+        CHECK_OUT(c, "hide");
+        CHECK(c.io.appKey);  // left to the service
+    }
+    {  // the last key left to iDrive dated an hour after now: it does not explain iDrive's radio page, won back
+        Car c;
+        heldOnBlank(c);
+        c.io.hardKey = true;
+        c.io.hardKeyAt = c.now + 3600;
+        c.radioPage();
+        c.poll();
+        CHECK_OUT(c, "event 52");
+    }
+    {  // the milliseconds past 2^31: BACK to our menu still asks for the blank state at once, at most every 300 ms
+        Car c;
+        c.ms = 2147483648LL + 500;
+        heldOnBlank(c);
+        c.blankVisible(false);
+        c.menu(true);
+        CHECK_OUT(c, "event 52");
+        c.ms += 100;
+        c.hold.menuFocus(kHelpState, true, c.now, c.ms);
+        CHECK_OUT(c, "");
+        c.ms += 200;
+        c.hold.menuFocus(kHelpState, true, c.now, c.ms);
+        CHECK_OUT(c, "event 52");
+    }
+    {  // and across 2^31
+        Car c;
+        c.ms = 2147483647LL - 100;
+        heldOnBlank(c);
+        c.blankVisible(false);
+        c.menu(true);
+        CHECK_OUT(c, "event 52");
+        c.ms += 100;
+        c.hold.menuFocus(kHelpState, true, c.now, c.ms);
+        CHECK_OUT(c, "");
+        c.ms += 200;  // past 2^31
+        c.hold.menuFocus(kHelpState, true, c.now, c.ms);
+        CHECK_OUT(c, "event 52");
+    }
+    {  // restarted between two polls (PID changed without observing idle): car state is still resent
+        Car c;
+        c.gear(2);
+        c.call(true);
+        c.hold.pdcChanged(evo::app::kParkAssistOn);
+        c.take();
+        c.service("connected", 42, 0);
+        c.poll();
+        CHECK_OUT(c, "await, call 1, gear 2, pdc 1");
+        c.service("connected", 43, 0);  // new PID directly on next poll
+        c.poll();
+        CHECK_OUT(c, "await, call 1, gear 2, pdc 1");
+    }
+}
+
 int main() {
     shortlyAfterStart();
+    clockAndDates();
     manualOpen();
     openButNeverCame();
     automaticStartOverIdriveScreen();
@@ -1092,6 +1499,7 @@ int main() {
     waitsAsideForIdrive();
     olderServiceRefused();
     recallOverIdriveScreen();
+    ownPopupClosed();
     comesUpOverOurMenu();
     backToOurMenu();
     popupOverBlank();
@@ -1100,8 +1508,10 @@ int main() {
     parkAssist();
     calls();
     appKeys();
+    radioPage();
     hardKeys();
     stepsAsideByItself();
+    optionPanelThenBack();
     backToBlankWhileMinimized();
     startWhileRunning();
     serviceRestart();
@@ -1110,8 +1520,9 @@ int main() {
         return 1;
     }
     puts(
-        "PASS hold machine: manual open, automatic start through the menu, refusals, waiting aside, recall over an "
-        "iDrive screen, BACK, popups, driving mode, "
-        "reverse, park assist, calls, app keys, hard keys, stepping aside, service restart");
+        "PASS hold machine: clocks and file dates, manual open, automatic start through the menu, refusals, waiting "
+        "aside, recall over an iDrive screen, our own popup closed, BACK, popups, driving mode, "
+        "reverse, park assist, calls, app keys, radio page raised by iDrive, hard keys, stepping aside, OPTION "
+        "panel then BACK, service restart");
     return 0;
 }

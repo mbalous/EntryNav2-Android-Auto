@@ -336,6 +336,17 @@ public:
         SSL_write(ssl_, &plain[0], static_cast<int>(plain.size()));
         return pending();
     }
+    // The phone closing its TLS: the close_notify alert record.
+    Bytes closeNotify() {
+        SSL_shutdown(ssl_);
+        return pending();
+    }
+    // Server-initiated TLS 1.2 renegotiation: sends a HelloRequest record.
+    Bytes renegotiate() {
+        SSL_renegotiate(ssl_);
+        SSL_do_handshake(ssl_);
+        return pending();
+    }
     bool open(const Bytes& records, Bytes& plain) {
         BIO_write(in_, &records[0], static_cast<int>(records.size()));
         plain.clear();
@@ -403,6 +414,12 @@ public:
         records[records.size() - 1] ^= 0x01;
         frame(channel, kSealed, records, nullptr);
     }
+    // A whole encrypted message whose frame also carries, after its record, the phone's close_notify.
+    void sealedThenClosed(uint8_t channel, const Bytes& message) {
+        log_.push_back(format("ph ch=%u fl=%02x ", channel, kSealed) + hex(message) + ", then close_notify");
+        const Bytes records = tls_.seal(message);
+        frame(channel, kSealed, records + tls_.closeNotify(), nullptr);
+    }
     // A ping, then every head unit frame up to its answer: whatever was sent or posted before has been handled.
     void settle() {
         if (lost_) {
@@ -420,8 +437,9 @@ public:
             }
         } while (channel != 0 || message != answer);
     }
-    // Version exchange, then TLS as the server, up to the head unit's AuthComplete.
-    void handshake() {
+    // Version exchange, then TLS as the server, up to the head unit's AuthComplete. `tail` follows the phone's last
+    // flight in the same message, sent in two fragments when it no longer fits one frame.
+    void handshake(const Bytes& tail = Bytes()) {
         uint8_t channel = 0, flags = 0;
         Bytes message;
         receive(channel, flags, message);  // VersionRequest
@@ -430,9 +448,26 @@ public:
             if (receive(channel, flags, message) <= 0 || message.size() < 3) {
                 return;
             }
-            send(0, kPlain, bytes({0x00, 0x03}) + tls_.step(Bytes(message.begin() + 2, message.end())));
+            const Bytes answer = bytes({0x00, 0x03}) + tls_.step(Bytes(message.begin() + 2, message.end())) +
+                                 (flight == 1 ? tail : Bytes());
+            if (answer.size() <= 0xffff) {
+                send(0, kPlain, answer);
+            } else {
+                piece(0, 0x01, Bytes(answer.begin(), answer.begin() + 0xffff), static_cast<uint32_t>(answer.size()));
+                piece(0, 0x02, Bytes(answer.begin() + 0xffff, answer.end()));
+            }
         }
         receive(channel, flags, message);  // AuthComplete
+    }
+    // Version exchange, then `records` as the phone's answer to the head unit's ClientHello.
+    void answerHello(const Bytes& records) {
+        uint8_t channel = 0, flags = 0;
+        Bytes message;
+        receive(channel, flags, message);  // VersionRequest
+        send(0, kPlain, bytes({0x00, 0x02, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00}));
+        if (receive(channel, flags, message) > 0) {  // ClientHello
+            send(0, kPlain, bytes({0x00, 0x03}) + records);
+        }
     }
     void discover() {
         send(0, kSealed, bytes({0x00, 0x05, 0x22, 0x05}) + text("Phone"));
@@ -494,6 +529,11 @@ private:
         while (done < data.size()) {
             const ssize_t n = write(fd_, &data[done], data.size() - done);
             if (n <= 0) {
+                // The head unit already closed the link: the next read says so ("hu <closed>"). Which of the two the
+                // phone meets first is only timing (a slower run, under ASan, writes after the close).
+                if (n < 0 && (errno == EPIPE || errno == ECONNRESET)) {
+                    return;
+                }
                 log_.push_back("ph <write failed>");
                 return;
             }
@@ -891,6 +931,11 @@ void fragmentEdges(std::vector<std::string>& log) {
     phone.send(6, kSealed, bytes({0x05}));
     phone.send(8, kSealed, bytes({0x05}));
     phone.settle();
+    log.push_back("-- channel 38: no media there, and its start indication leaves channel 6's session alone");
+    phone.send(38, kSealed, bytes({0x80, 0x01, 0x08, 0x09}));
+    phone.send(38, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0x03, 0x97}));
+    phone.send(6, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0x04, 0x96}));
+    phone.settle();
     log.push_back("-- a fragment that does not decrypt: the rest of its message skipped, a whole one passes, one ack");
     phone.piece(6, 0x09, head, static_cast<uint32_t>(video.size()));
     phone.cutRecord(6, 0x08, counting(6, 0x6c));
@@ -898,10 +943,11 @@ void fragmentEdges(std::vector<std::string>& log) {
     phone.piece(6, 0x08, counting(6, 0x72));
     phone.piece(6, 0x0a, tail);
     phone.settle();
-    log.push_back("-- a second version response restarts TLS");
+    log.push_back("-- a second version response is ignored: TLS goes on");
     phone.send(0, kPlain, bytes({0x00, 0x02, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00}));
+    phone.send(6, kSealed, bytes({0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0x03, 0x97}));
     phone.settle();
-    log.push_back("-- garbage where an encrypted frame should be");
+    log.push_back("-- garbage where an encrypted frame should be breaks TLS: the session ends");
     phone.raw("sealed garbage", bytes({0x06, 0x0b, 0x00, 0x08, 1, 2, 3, 4, 5, 6, 7, 8}));
     phone.settle();
     phone.leave();
@@ -1151,6 +1197,204 @@ std::string corruptedRecord() {
     return std::string();
 }
 
+size_t linesStarting(const std::vector<std::string>& log, const std::string& head) {
+    size_t count = 0;
+    for (size_t i = 0; i < log.size(); ++i) {
+        count += log[i].compare(0, head.size(), head) == 0 ? 1 : 0;
+    }
+    return count;
+}
+
+// A phone's handshake answer that OpenSSL cannot take ends the session at once, rather than when the phone goes
+// silent; a handshake message once TLS is established is ignored, and TLS stays whole; a last flight followed by more
+// than 64 KiB is no handshake. An empty verdict: passed.
+std::string handshakeFailures() {
+    struct Refusal {
+        const char* name;
+        Bytes records;
+    };
+    const Refusal refusals[] = {
+        {"garbage for a handshake", bytes({1, 2, 3, 4, 5, 6, 7, 8})},
+        {"the phone's fatal alert", bytes({0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28})},  // handshake_failure
+    };
+    for (size_t i = 0; i < sizeof(refusals) / sizeof(refusals[0]); ++i) {
+        std::vector<std::string> log;
+        Link link;
+        Phone phone(link.phoneFd, log);
+        phone.answerHello(refusals[i].records);
+        phone.settle();  // a plain ping: answered only by a session still running
+        if (linesStarting(log, "hu ch=0 fl=03 000c") != 0 || !waitEnded(link.session)) {
+            return format("%s: the session carried on (ping answered=%u, active=%d)", refusals[i].name,
+                          static_cast<unsigned>(linesStarting(log, "hu ch=0 fl=03 000c")),
+                          link.session.isActive() ? 1 : 0);
+        }
+    }
+    {
+        std::vector<std::string> log;
+        Link link;
+        Phone phone(link.phoneFd, log);
+        phone.handshake();
+        phone.send(0, kPlain, bytes({0x00, 0x03, 0x16, 0x03, 0x03, 0x00, 0x05, 1, 2, 3, 4, 5}));
+        phone.discover();  // encrypted: answered only while TLS is whole
+        const size_t authCompletes = linesStarting(log, "hu ch=0 fl=03 0004");
+        const size_t discoveries = linesStarting(log, "hu ch=0 fl=0b 0006");
+        phone.leave();
+        if (authCompletes != 1 || discoveries != 1 || !waitEnded(link.session)) {
+            return format("handshake after TLS: %u AuthComplete, %u discovery answers", unsigned(authCompletes),
+                          unsigned(discoveries));
+        }
+    }
+    {
+        std::vector<std::string> log;
+        Link link;
+        Phone phone(link.phoneFd, log);
+        phone.handshake(Bytes(70 * 1024, 0));
+        phone.settle();
+        if (linesStarting(log, "hu ch=0 fl=03 0004") != 0 || !waitEnded(link.session)) {
+            return format("70 KiB after the last flight: AuthComplete sent=%u, active=%d",
+                          static_cast<unsigned>(linesStarting(log, "hu ch=0 fl=03 0004")),
+                          link.session.isActive() ? 1 : 0);
+        }
+    }
+    return std::string();
+}
+
+// A frame whose first record decrypts and whose next one ends TLS (the phone's close_notify): TLS is broken all the
+// same, so the session ends at that frame, and the message before is not answered (here an encrypted ping, whose
+// answer would go in clear).
+std::string closedAfterMessage() {
+    std::vector<std::string> log;
+    Link link;
+    Phone phone(link.phoneFd, log);
+    phone.handshake();
+    phone.discover();
+    log.clear();
+    phone.sealedThenClosed(0, bytes({0x00, 0x0b, 0x08, 0x81, 0x7f}));
+    if (!waitEnded(link.session)) {
+        return "TLS closed by the phone after a message did not end the session";
+    }
+    phone.untilClosed();
+    for (size_t i = 0; i < log.size(); ++i) {
+        if (log[i].compare(0, 3, "hu ") == 0 && log[i] != "hu <closed>") {
+            return "the head unit still sent \"" + log[i] + "\" after TLS was closed";
+        }
+    }
+    return std::string();
+}
+
+// A peer that keeps the head unit's only connection busy with an empty frame every second, never doing TLS, loses it
+// 10 s after it connected; the silence limit alone would never end it. Here on a session object that ran a whole
+// handshake with a phone before, as the service's one session does from phone to phone: that phone's TLS must not
+// count for this connection. Run on the clock, kept out of the golden. An empty verdict: passed.
+std::string tlsDeadline() {
+    int first[2], second[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, first) != 0 || socketpair(AF_UNIX, SOCK_STREAM, 0, second) != 0) {
+        return "socketpair";
+    }
+    aa::AASession session;
+    watch(session, true);
+    std::string verdict;
+    if (!session.start(first[0])) {
+        verdict = "first session start";
+    } else {
+        std::vector<std::string> log;
+        Phone phone(first[1], log);
+        phone.handshake();
+        phone.settle();
+        if (phone.lost() || std::find(log.begin(), log.end(), "hu ch=0 fl=03 0004 0800") == log.end()) {
+            verdict = "the first phone did not get through TLS";
+        }
+    }
+    long long lasted = -1;
+    if (verdict.empty() && !session.start(second[0])) {
+        verdict = "second session start";
+    } else if (verdict.empty()) {
+        const uint8_t empty[] = {0x00, 0x03, 0x00, 0x00};  // a whole frame of no bytes on the control channel
+        const long long since = monotonicMs();
+        long long lastFrame = 0;
+        while (session.isActive() && monotonicMs() - since < 14000) {
+            if (monotonicMs() - lastFrame >= 1000) {
+                lastFrame = monotonicMs();
+                if (write(second[1], empty, sizeof(empty)) != static_cast<ssize_t>(sizeof(empty))) {
+                    break;
+                }
+            }
+            usleep(50000);
+        }
+        lasted = monotonicMs() - since;
+        if (session.isActive() || lasted < 9500 || lasted > 12500) {
+            verdict = format("a peer without TLS kept the connection for %lld ms (active=%d), want about 10 s", lasted,
+                             session.isActive() ? 1 : 0);
+        }
+    }
+    session.stop();
+    close(first[1]);
+    close(second[1]);
+    takeEvents();
+    return verdict;
+}
+
+// The head unit's TLS client on its own: its ClientHello offers no compression (null only, whatever the libssl
+// finds), and one call of open() never gives more than a whole message may hold: 9 MiB of records in one go break TLS
+// instead. An empty verdict: passed.
+std::string tlsBounds() {
+    aa::TlsClient car;
+    PhoneTls phone;
+    std::vector<uint8_t> hello, answer;
+    if (!car.start() || !car.hello(hello)) {
+        return "no ClientHello";
+    }
+    // Record header 5, handshake header 4, version 2, random 32, then the session id, the cipher suites and the
+    // compression methods, each after its length.
+    size_t at = 5 + 4 + 2 + 32;
+    at += at < hello.size() ? 1 + hello[at] : 0;
+    at += at + 1 < hello.size() ? 2 + ((hello[at] << 8) | hello[at + 1]) : 0;
+    if (at + 1 >= hello.size() || hello[at] != 1 || hello[at + 1] != 0) {
+        return format("the ClientHello offers %d compression method(s), the first %d",
+                      at < hello.size() ? hello[at] : -1, at + 1 < hello.size() ? hello[at + 1] : -1);
+    }
+    Bytes flight = phone.step(Bytes(hello.begin(), hello.end()));
+    car.handshake(&flight[0], flight.size(), answer);
+    flight = phone.step(Bytes(answer.begin(), answer.end()));
+    car.handshake(&flight[0], flight.size(), answer);
+    if (!car.established()) {
+        return "no TLS between the two";
+    }
+    const Bytes small = phone.seal(bytes({0x00, 0x0b, 0x08, 0x01}));
+    std::vector<uint8_t> plain;
+    if (!car.open(&small[0], small.size(), plain) || plain.size() != 4) {
+        return "a small record did not open";
+    }
+    const Bytes records = phone.seal(Bytes(9 * 1024 * 1024, 0x42));
+    const bool opened = car.open(&records[0], records.size(), plain);
+    if (opened || !car.broken() || !plain.empty()) {
+        return format("9 MiB from one call: opened=%d broken=%d, %u bytes out", opened ? 1 : 0, car.broken() ? 1 : 0,
+                      static_cast<unsigned>(plain.size()));
+    }
+    // Server-initiated renegotiation (HelloRequest) must break TLS instead of queuing ClientHello into toPhone_.
+    aa::TlsClient car2;
+    PhoneTls phone2;
+    if (!car2.start() || !car2.hello(hello)) {
+        return "renegotiation: no ClientHello";
+    }
+    flight = phone2.step(Bytes(hello.begin(), hello.end()));
+    car2.handshake(&flight[0], flight.size(), answer);
+    flight = phone2.step(Bytes(answer.begin(), answer.end()));
+    car2.handshake(&flight[0], flight.size(), answer);
+    if (!car2.established()) {
+        return "renegotiation: no TLS";
+    }
+    const Bytes helloReq = phone2.renegotiate();
+    if (helloReq.empty()) {
+        return "renegotiation: phone produced no HelloRequest";
+    }
+    const bool renegOpened = car2.open(&helloReq[0], helloReq.size(), plain);
+    if (renegOpened || !car2.broken()) {
+        return format("renegotiation accepted: opened=%d broken=%d", renegOpened ? 1 : 0, car2.broken() ? 1 : 0);
+    }
+    return std::string();
+}
+
 // A phone whose Wi-Fi stalls takes nothing in while it still speaks: the head unit's send gives up partway through a
 // frame, and whatever followed would be garbage to the phone. The session must end there, as lost and not as a
 // goodbye. The head unit gives a stuck send 5 s (set by start()); to stay fast, the test shortens that on the head
@@ -1258,6 +1502,64 @@ std::string keyframeAfterLoss() {
     phone.settle();
     if (!focusTrail(log, from).empty() || !link.session.isActive()) {
         return "a second request within 10 s was not held back";
+    }
+    return std::string();
+}
+
+// Once TLS is up, a message in clear other than a ping is still handled, and the session's log names it once per
+// channel and id, then counts them at the end; pings in clear are not logged. Read from the session's own output,
+// caught in a file for the time of the session. An empty verdict: passed.
+std::string plainAfterTls() {
+    char path[] = "/tmp/entry-session-plain-XXXXXX";
+    const int file = mkstemp(path);
+    if (file < 0) {
+        return "mkstemp";
+    }
+    fflush(stdout);
+    const int saved = dup(1);
+    dup2(file, 1);
+    std::vector<std::string> log;
+    {
+        Link link;
+        Phone phone(link.phoneFd, log);
+        phone.handshake();
+        phone.discover();
+        phone.settle();
+        phone.send(0, kPlain, bytes({0x00, 0x12, 0x08, 0x01}));  // audio focus request
+        phone.send(0, kPlain, bytes({0x00, 0x12, 0x08, 0x01}));
+        phone.send(6, kPlain, bytes({0x80, 0x00, 0x08, 0x03}));  // video setup
+        phone.settle();
+        phone.leave();
+        waitEnded(link.session);
+    }
+    fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    std::string text;
+    char buf[4096];
+    ssize_t n;
+    lseek(file, 0, SEEK_SET);
+    while ((n = read(file, buf, sizeof(buf))) > 0) {
+        text.append(buf, static_cast<size_t>(n));
+    }
+    close(file);
+    unlink(path);
+    size_t named = 0;
+    for (size_t at = text.find("came in clear after TLS: handled"); at != std::string::npos;
+         at = text.find("came in clear after TLS: handled", at + 1)) {
+        ++named;
+    }
+    const size_t answers = std::count(log.begin(), log.end(), std::string("hu ch=0 fl=0b 0013 0801"));
+    const bool setup = std::find(log.begin(), log.end(), "hu ch=6 fl=0b 8003 0802100a1800") != log.end();
+    if (named != 2 || text.find("channel 0 message 0x0012 (4 bytes) came in clear after TLS") == std::string::npos ||
+        text.find("channel 6 message 0x8000 (4 bytes) came in clear after TLS") == std::string::npos ||
+        text.find("3 message(s) other than pings came in clear after TLS") == std::string::npos) {
+        return format("%u kinds named in the log, want the audio focus request and the video setup, then 3 counted",
+                      static_cast<unsigned>(named));
+    }
+    if (answers != 2 || !setup) {
+        return format("messages in clear no longer handled: %u audio focus answers, video setup answered=%d",
+                      static_cast<unsigned>(answers), setup ? 1 : 0);
     }
     return std::string();
 }
@@ -1522,10 +1824,17 @@ int main(int argc, char** argv) {
     takeEvents();
     const std::string corrupted = writing ? std::string() : corruptedRecord();
     takeEvents();
+    const std::string handshake = writing ? std::string() : handshakeFailures();
+    const std::string closedTls = writing ? std::string() : closedAfterMessage();
+    const std::string deadline = writing ? std::string() : tlsDeadline();
+    const std::string tlsLimits = writing ? std::string() : tlsBounds();
+    takeEvents();
     const std::string stalled = writing ? std::string() : stalledSend();
     const std::string keyframe = writing ? std::string() : keyframeAfterLoss();
     takeEvents();
     const std::string givenUp = writing ? std::string() : carGivesUp();
+    takeEvents();
+    const std::string plainLogged = writing ? std::string() : plainAfterTls();
     takeEvents();
     const std::string deferredFocus = writing ? std::string() : deferredFocusOnSetup();
     takeEvents();
@@ -1584,6 +1893,26 @@ int main(int argc, char** argv) {
         return 1;
     }
     puts("PASS session, corrupted record: it ends the session at once, nothing more is sent");
+    if (!handshake.empty()) {
+        printf("FAIL session, TLS handshake: %s\n", handshake.c_str());
+        return 1;
+    }
+    puts("PASS session, TLS handshake: a failed one ends it at once, one after TLS is ignored, 64 KiB at most");
+    if (!closedTls.empty()) {
+        printf("FAIL session, TLS closed after a message: %s\n", closedTls.c_str());
+        return 1;
+    }
+    puts("PASS session, TLS closed after a message in the same frame: it ends there, the message is not answered");
+    if (!deadline.empty()) {
+        printf("FAIL session, TLS deadline: %s\n", deadline.c_str());
+        return 1;
+    }
+    puts("PASS session, TLS deadline: a peer that never does TLS loses the connection 10 s after it came");
+    if (!tlsLimits.empty()) {
+        printf("FAIL session, TLS bounds: %s\n", tlsLimits.c_str());
+        return 1;
+    }
+    puts("PASS session, TLS bounds: no compression offered, one frame never opens into more than a message");
     if (!stalled.empty()) {
         printf("FAIL session, stalled send: %s\n", stalled.c_str());
         return 1;
@@ -1599,6 +1928,11 @@ int main(int argc, char** argv) {
         return 1;
     }
     puts("PASS session, given up by the car from its video callback: connection closed, ended, not a goodbye");
+    if (!plainLogged.empty()) {
+        printf("FAIL session, messages in clear after TLS: %s\n", plainLogged.c_str());
+        return 1;
+    }
+    puts("PASS session, messages in clear after TLS: still handled, logged once per kind, pings not logged");
     if (!oversized) {
         fprintf(stderr, "FAIL session, oversized fragmented video followed by small video\n");
         return 1;

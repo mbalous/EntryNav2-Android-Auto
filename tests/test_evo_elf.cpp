@@ -160,6 +160,7 @@ int main() {
     writeFile(other);
     assert(!elf.load(g_path));
     assert(!elf.load("/nonexistent/library.so"));
+    assert(!elf.symbol("app", symbol));  // failed load resets prior symbols/strings cleanly
 
     realLibrary();
     unlink(path);

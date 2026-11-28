@@ -47,7 +47,16 @@ int main() {
     CHECK(evo::parseControlCommand("show\n", 5, c) && c.verb == "show" && !c.hasArg);
     CHECK(evo::parseControlCommand("await", 5, c) && c.verb == "await" && !c.hasArg);  // a phone waits for "show"
     CHECK(!evo::parseControlCommand("await 1", 7, c));
-    CHECK(evo::parseControlCommand("drivemode 0 3 1", 15, c) == false);                 // 3 args: refused
+    CHECK(evo::parseControlCommand("drivemode 0 3 1", 15, c) == false);  // 3 args: refused
+    CHECK(evo::parseControlCommand("drivemode", 9, c) && c.verb == "drivemode" && !c.hasArg);
+    CHECK(evo::parseControlCommand("drivemode 2", 11, c) && c.verb == "drivemode" && c.hasArg && c.arg == 2);
+    CHECK(!evo::parseControlCommand("drivemode garbage", 17, c));
+    CHECK(!evo::parseControlCommand("gear 99999999999999999999", 25, c));
+    CHECK(!evo::parseControlCommand("gear 2x", 7, c));
+    CHECK(!evo::parseControlCommand(" show", 5, c));
+    CHECK(!evo::parseControlCommand("quit\0extra", 10, c));
+    CHECK(evo::controlPeerAllowed(0, 1000) && evo::controlPeerAllowed(1000, 1000));
+    CHECK(!evo::controlPeerAllowed(1001, 0) && !evo::controlPeerAllowed(1001, 1000));
     CHECK(evo::parseControlCommand("call 1", 6, c) && c.verb == "call" && c.arg == 1);  // phone keys during a call
     CHECK(evo::parseControlCommand("call", 4, c) == false);
     CHECK(evo::parseControlCommand("popup 1", 7, c) && c.verb == "popup" && c.arg == 1);  // iDrive popup

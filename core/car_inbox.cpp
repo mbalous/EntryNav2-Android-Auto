@@ -20,14 +20,11 @@ const size_t kMaxMicrophoneChunk = 8192;
 const unsigned kDropsLogged = 5;
 const int kTouchMove = 2;  // TouchEventOut::action
 
-void setNonBlocking(int fd) {
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-}
-
 }  // namespace
 
 CarInbox::CarInbox()
-    : touchForwarding_(true),
+    : pending_(false),
+      touchForwarding_(true),
       inputBound_(false),
       keyDrops_(0),
       rotaryDrops_(0),
@@ -39,10 +36,7 @@ CarInbox::CarInbox()
       microphoneOpen_(false) {
     pthread_mutex_init(&mutex_, nullptr);
     // Not optional, unlike touch: keys, the microphone and the video focus all reach the session through it.
-    if (pipe(wake_) == 0) {
-        setNonBlocking(wake_[1]);
-        setNonBlocking(wake_[0]);
-    } else {
+    if (pipe2(wake_, O_NONBLOCK | O_CLOEXEC) != 0) {
         wake_[0] = wake_[1] = -1;
     }
 }
@@ -57,6 +51,7 @@ CarInbox::~CarInbox() {
 }
 
 void CarInbox::wake() {
+    pending_.store(true, std::memory_order_release);
     if (wake_[1] >= 0) {
         const char byte = 1;
         const ssize_t written = write(wake_[1], &byte, 1);
@@ -65,6 +60,10 @@ void CarInbox::wake() {
 }
 
 void CarInbox::emptyWake() {
+    pending_.store(false, std::memory_order_release);
+    if (wake_[0] < 0) {
+        return;
+    }
     char junk[64];
     while (read(wake_[0], junk, sizeof(junk)) > 0) {
     }
@@ -275,6 +274,7 @@ void CarInbox::reset() {
     location_.reset();
     microphoneOpen_ = false;
     microphone_.clear();
+    emptyWake();
 }
 
 }  // namespace aa

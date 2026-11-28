@@ -43,6 +43,11 @@ inline bool slotConfigurationReadable(unsigned slot) {
     return slot <= 1;
 }
 
+// Queries the system D-Bus daemon for the UID owning org.alps.evolution (read-only). Returns >= 0 on success, -1 if
+// unavailable. On EntryNav2, evo_genivi_bt owns org.alps.evolution on D-Bus while its sibling evo_hli_socket maps
+// libevo_btappl.so under the same service user (btmbt); authenticating the UID pins SppSnapshotReader to that user.
+int queryAlpsServiceUid();
+
 class AlpsSppLink {
 public:
     AlpsSppLink(const AlpsSppLink&) = delete;
@@ -67,7 +72,9 @@ public:
     // Waits for the phone to open the link (DeviceConnectInd or first DataInd on our instance).
     // Returns a fd (read/write of a transparent byte stream), or -1 after timeoutMs.
     // The fd is borrowed: do not close() it; closeLink() closes it once I/O has ended.
-    // A disconnection reads as EOF; the fd is never recycled under the reader.
+    // A disconnection reads as EOF; the fd is never recycled under the reader. A connection that comes while the
+    // previous link is still held (not closed yet, or its last bytes not read) opens once that link is closed, with
+    // what the phone sent meanwhile.
     int waitLink(int timeoutMs);
     void closeLink();
     void interruptLink();  // wakes the reader (EOF) without closing its fd; then join, then closeLink/stop

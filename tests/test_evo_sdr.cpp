@@ -330,14 +330,31 @@ int main() {
           tall.bottomInset() == 120);  // one pixel too tall for the small canvas
     CHECK(aa::planDisplay(1920, 1080, full) && full.resolution == 3 && full.bottomInset() == 0);
     // Sizes already run in a car pass the check without a warning; any other size gets one.
-    CHECK(plan.triedInCar() && same.triedInCar() && small.triedInCar());
-    CHECK(!exact.triedInCar() && !wide.triedInCar() && !tall.triedInCar() && !full.triedInCar());
+    CHECK(plan.triedInCar() && same.triedInCar() && small.triedInCar() && wide.triedInCar());
+    CHECK(!exact.triedInCar() && !tall.triedInCar() && !full.triedInCar());
     aa::DisplayPlan refused;
     CHECK(!aa::planDisplay(1921, 720, refused) && !aa::planDisplay(1280, 1081, refused) &&
           !aa::planDisplay(0, 480, refused) && !aa::planDisplay(800, 0, refused) &&
           refused.reference());  // a refused panel leaves the plan as it was
     // The reference car: the very bytes sent before the panel was read, whether the plan is given or not.
     CHECK(aa::buildCarServiceDiscovery(kDhuSdpProtobuf, kDhuSdpProtobufLen, nullptr, nullptr, same) == unversioned);
+    // Wireless: the 1280x720 canvas at most; over the car's 2.4 GHz access point a phone asked for 1920x1080 closed
+    // the session at the video setup (#180). A panel that canvas does not hold shows its top part stretched, both
+    // axes equally; the phone is told what the reference car tells it.
+    aa::DisplayPlan capped, capSame, capSmall, capFull;
+    CHECK(aa::planDisplay(1440, 540, capped, 2) && capped.resolution == 2 && capped.canvasWidth == 1280 &&
+          capped.canvasHeight == 720 && capped.width == 1440 && capped.height == 540 && capped.shownWidth == 1280 &&
+          capped.shownHeight == 480 && capped.bottomInset() == 240 && capped.rightInset() == 0 && capped.scaled() &&
+          capped.phoneWidth() == 1280 && capped.phoneHeight() == 480);
+    CHECK(capped.touchScale() > 0.888 && capped.touchScale() < 0.889);
+    CHECK(aa::buildCarServiceDiscovery(kDhuSdpProtobuf, kDhuSdpProtobufLen, nullptr, nullptr, capped) == unversioned);
+    CHECK(aa::planDisplay(1280, 480, capSame, 2) && capSame.reference() && !capSame.scaled() &&
+          capSame.touchScale() == 1.0);
+    CHECK(aa::planDisplay(800, 480, capSmall, 2) && capSmall.resolution == 1 && !capSmall.scaled());
+    CHECK(aa::planDisplay(1920, 1080, capFull, 2) && capFull.resolution == 2 && capFull.shownWidth == 1280 &&
+          capFull.shownHeight == 720 && capFull.bottomInset() == 0 && capFull.scaled());
+    CHECK(!wide.scaled() && wide.shownWidth == 1440 && wide.shownHeight == 540);  // over USB: as before
+    CHECK(!aa::planDisplay(1921, 720, refused, 2) && !aa::planDisplay(0, 480, refused, 2) && refused.reference());
     Shown s;
     CHECK(shown(unversioned, s) && s.resolution == 2 && s.marginW == 1280 && s.marginH == 480 && s.density == 140 &&
           s.top == 0 && s.bottom == 240 && s.left == 0 && s.right == 0 && s.touchW == 1280 && s.touchH == 720);

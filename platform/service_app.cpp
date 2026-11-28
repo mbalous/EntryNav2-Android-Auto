@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 
+#include "atomic_file.hpp"
 #include "evo_ap.hpp"
 #include "evo_log.hpp"
 #include "evo_spp_snapshot.hpp"
@@ -17,7 +18,7 @@
 
 namespace evo {
 
-ServiceApp::ServiceApp(uint16_t p, bool v, volatile sig_atomic_t* quit)
+ServiceApp::ServiceApp(uint16_t p, bool v, std::atomic<int>* quit)
     : knob(nullptr),
       server(p),
       port(p),
@@ -94,8 +95,13 @@ void ServiceApp::sppLinkOpened() {
     pthread_mutex_unlock(&mu);
 }
 
+// The hostapd commands of prepareAccessPoint ask it before each one.
+static bool stopAsked(void* app) {
+    return static_cast<ServiceApp*>(app)->stopRequested();
+}
+
 void ServiceApp::prepareAccessPoint() {
-    ELOG("ServiceApp", "car access point: %s", describeUapsdOffer(withdrawAccessPointUapsd()));
+    ELOG("ServiceApp", "car access point: %s", describeUapsdOffer(withdrawAccessPointUapsd(stopAsked, this)));
 }
 
 void ServiceApp::handshakeEnded(bool spoke, bool accepted) {
@@ -242,7 +248,20 @@ void ServiceApp::audioButton(void* user) {
 // once, so the result does not depend on timing (observed on the car otherwise: iDrive sometimes came back,
 // sometimes not). If iDrive stays on the blank Android Auto page the iDrive app opens its main menu. The Android
 // Auto row brings the phone back.
+// A key file for the iDrive app: one line, renamed into place so it is never read half written; its time is the
+// file's own.
+static void writeKeyFile(const char* path, const char* word, const char* name) {
+    char line[96];
+    const int n = snprintf(line, sizeof(line), "%s %s\n", word, name);
+    if (n > 0 && n < static_cast<int>(sizeof(line))) {
+        writeAtomicFile(path, line, static_cast<size_t>(n), 0644);
+    }
+}
+
 void ServiceApp::hardKey(const char* name, void* user) {
+    // Every key left to iDrive, whatever it does next: the iDrive app tells iDrive leaving its blank state for a key
+    // from iDrive raising one of its screens by itself (its radio page, when the tuner follows the station, #138).
+    writeKeyFile(contract::kHardKeyFile, "hardkey", name);
     // OPTION opens the Android Auto menu of the iDrive app (Stop, start automatically): see the app's hold logic.
     // NAV, MAP and MEDIA always go to Android Auto (appKey); COM reaches here only during a call.
     static const char* const leave[] = {"MENU", "COM", "OPTIONS"};
@@ -286,13 +305,7 @@ void ServiceApp::knobEvent(const aa::CcsEvent& ev, void* user) {
 // if iDrive left its blank state, puts it back.
 void ServiceApp::appKey(const char* name, void* user) {
     (void)user;
-    const std::string tmp = std::string(contract::kAppKeyFile) + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "w");
-    if (f) {
-        fprintf(f, "appkey %s\n", name);
-        fclose(f);
-        rename(tmp.c_str(), contract::kAppKeyFile);
-    }
+    writeKeyFile(contract::kAppKeyFile, "appkey", name);
     if (!strcmp(name, "BACK") || !strcmp(name, "TILT_LEFT")) {
         // Every BACK goes through here: logged with the knob's own line only.
         return;

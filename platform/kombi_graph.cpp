@@ -97,7 +97,8 @@ void appendUtf16(Bytes& b, uint32_t unit) {
     b.push_back(static_cast<uint8_t>(unit));
 }
 
-// UTF-8 to UTF-16BE. A byte that doesn't start a whole character becomes U+FFFD; code points above U+FFFF a pair.
+// UTF-8 to UTF-16BE. A byte that doesn't start a whole character becomes U+FFFD, and so does a character UTF-16
+// cannot hold or that UTF-8 does not allow (past U+10FFFF, a surrogate, an overlong form); U+10000 and above a pair.
 Bytes utf16(const std::string& s) {
     Bytes out;
     for (size_t i = 0; i < s.size();) {
@@ -128,6 +129,10 @@ Bytes utf16(const std::string& s) {
                 break;
             }
             cp = cp << 6 | (next & 0x3F);
+        }
+        static const uint32_t kLeast[] = {0, 0, 0x80, 0x800, 0x10000};  // by width: shorter is an overlong form
+        if (cp < kLeast[width] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            cp = 0xFFFD;  // width kept: the whole bad sequence is one replacement character
         }
         i += width;
         if (cp >= 0x10000) {
@@ -457,7 +462,7 @@ double lanePosition(const LaneSection& section, bool knownDistance, double metre
     if (!knownDistance) {
         return section.maneuverAt + section.span;
     }
-    double ahead = metres < 0.0 ? 0.0 : metres;
+    double ahead = metres > 0.0 ? metres : 0.0;  // a NaN, as a negative distance, is at the maneuver
     if (ahead > section.span) {
         ahead = section.span;
     }

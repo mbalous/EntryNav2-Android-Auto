@@ -120,7 +120,7 @@ void cancels() {
         CHECK(link.cancel(g, 3.0, 0.2) && k.count() > full.size());
     }
     {
-        // Nothing listening: the link is down, not a refusal.
+        // Nothing listening: unreachable, nothing written; not a refusal.
         const int closed = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in a;
         memset(&a, 0, sizeof(a));
@@ -130,7 +130,7 @@ void cancels() {
         CHECK(bind(closed, reinterpret_cast<struct sockaddr*>(&a), sizeof(a)) == 0 &&
               getsockname(closed, reinterpret_cast<struct sockaddr*>(&a), &size) == 0);
         ClusterLink link("127.0.0.1", ntohs(a.sin_port), 500);
-        CHECK(link.send(someRequests(1)) == kLinkDown && !link.cancel(g));
+        CHECK(link.send(someRequests(1)) == kUnreachable && !link.cancel(g));
         close(closed);
     }
 }

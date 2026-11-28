@@ -5,10 +5,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/file.h>
@@ -18,10 +16,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../platform/atomic_file.hpp"
 #include "../platform/control_address.hpp"
+#include "../platform/fd_hygiene.hpp"
 #include "../platform/kept_log.hpp"
+#include "../platform/proc_identity.hpp"
 #include "../platform/service_contract.hpp"
 #include "app_log.hpp"
+#include "child_reaper.hpp"
 #include "mono_clock.hpp"
 #include "spawn_attr.hpp"
 
@@ -36,6 +38,7 @@ long g_lastLaunch = 0;
 pid_t g_launchPid = 0;
 bool g_holdStarts = false;  // an update from the USB stick needs Android Auto stopped (holdServiceStarts)
 pid_t g_stopPid = 0;
+char g_stopStartTicks[32] = "";
 long g_stopTime = 0;
 int g_stopStage = 0;
 
@@ -58,20 +61,20 @@ bool pidAlive(int pid) {
     return errno == EPERM;
 }
 
-void* reaper(void* p) {
-    pid_t pid = static_cast<pid_t>(reinterpret_cast<intptr_t>(p));
-    int status = 0;
-    pid_t r;
-    do {
-        r = waitpid(pid, &status, 0);
-    } while (r < 0 && errno == EINTR);
-    if (r == pid) {
+// The supervisor and the jobs stopped after their limit, collected at each status poll, never waited for.
+ChildReaper g_children;
+
+void childEnded(pid_t pid, int status, void*) {
+    if (pid != g_launchPid) {
+        alog("child pid %d collected", static_cast<int>(pid));
+        return;
+    }
+    if (status >= 0) {
         alog("service supervisor pid %d ended (%s %d)%s", static_cast<int>(pid), WIFEXITED(status) ? "exit" : "signal",
              WIFEXITED(status) ? WEXITSTATUS(status) : WTERMSIG(status),
              WIFEXITED(status) && WEXITSTATUS(status) == 127 ? " : 127 = start refused before/at exec" : "");
-        __sync_bool_compare_and_swap(&g_launchPid, pid, 0);  // a reused pid must not look like a starting service
     }
-    return nullptr;
+    g_launchPid = 0;  // a reused pid must not look like a starting service
 }
 
 // True when a service answers on the control channel. With none, the answer comes at once, not after a 200 ms
@@ -82,6 +85,10 @@ bool controlPortBusy() {
 
 }  // namespace
 
+bool launchCoolingDown(long now) {
+    return g_lastLaunch != 0 && now - g_lastLaunch < 3;
+}
+
 // ---- launching the service ------------------------------------------------------------------------------------------
 void launchService() {
     const long now = monoSeconds();
@@ -89,11 +96,12 @@ void launchService() {
         alog("launch refused: an update from the USB stick is in progress");
         return;
     }
-    if (g_lastLaunch && now - g_lastLaunch < 3) {
+    if (launchCoolingDown(now)) {
         alog("launch ignored (pressed again within 3 s)");
         return;
     }
     g_lastLaunch = now;
+    reapChildren();  // an ended supervisor not collected yet must not look still running
     struct stat sst;
     if (stat(contract::kSupervisor, &sst) != 0) {
         alog("launch: %s not found", contract::kSupervisor);
@@ -112,7 +120,7 @@ void launchService() {
     const char* logPath = "";
     int out = openServiceLog(contract::kMaintenance, contract::kServiceLogKept, contract::kServiceLogKeptOld,
                              contract::kServiceLog, &logPath);
-    if (in < 0 || out < 0) {
+    if (in < 0 || out < 0 || !ensureFdAboveStdio(in) || !ensureFdAboveStdio(out)) {
         alog("launch: cannot open /dev/null or %s (errno %d)", logPath, errno);
         if (in >= 0) {
             close(in);
@@ -158,14 +166,13 @@ void launchService() {
     }
     g_launchPid = pid;
     alog("launch: started %s --service pid %d (log %s)", contract::kSupervisor, static_cast<int>(pid), logPath);
-    pthread_t t;
-    pthread_attr_t ta;
-    pthread_attr_init(&ta);
-    pthread_attr_setdetachstate(&ta, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&t, &ta, reaper, reinterpret_cast<void*>(static_cast<intptr_t>(pid))) != 0) {
-        alog("launch: no reaper thread");
+    if (!g_children.keep(pid)) {
+        alog("launch: no slot left to collect pid %d", static_cast<int>(pid));
     }
-    pthread_attr_destroy(&ta);
+}
+
+void reapChildren() {
+    g_children.reap(childEnded, nullptr);
 }
 
 // ---- control messages and state -------------------------------------------------------------------------------------
@@ -175,19 +182,19 @@ void sendToService(const char* message) {
 
 ServiceState readServiceState() {
     ServiceState d;
-    FILE* f = fopen(contract::kStateFile, "r");
-    if (f) {
+    char buf[96];
+    if (readRegularTextFile(contract::kStateFile, buf, sizeof(buf), true) > 0) {
         char st[24] = "";
         int pid = 0, ov = 0;
-        int n = fscanf(f, "%23s %d %d", st, &pid, &ov);
-        fclose(f);
-        if (n >= 2 && pidAlive(pid)) {
+        int n = sscanf(buf, "%23s %d %d", st, &pid, &ov);
+        if (n >= 2 && pid > 1 && pid != static_cast<int>(getpid()) && pidAlive(pid) &&
+            processMatches(static_cast<pid_t>(pid), "entry-aad")) {
             strcpy(d.state, st);
             d.pid = pid;
             d.overlay = (n >= 3) ? ov : 0;
             return d;
         }
-        unlink(contract::kStateFile);  // left by a service that is gone
+        unlink(contract::kStateFile);  // left by a service that is gone, or invalid
     }
     if (g_launchPid > 0 && pidAlive(g_launchPid)) {  // supervisor in its preflight: show "connecting"
         strcpy(d.state, "connecting");
@@ -209,12 +216,23 @@ void beginStop() {
         return;
     }
     g_stopPid = d.pid > 0 ? static_cast<pid_t>(d.pid) : -1;
+    g_stopStartTicks[0] = '\0';
+    if (g_stopPid > 0 && !readProcStartTicks(g_stopPid, g_stopStartTicks, sizeof(g_stopStartTicks))) {
+        g_stopPid = -1;
+    }
     g_stopTime = monoSeconds();
     g_stopStage = 0;
     sendToService("quit");
-    int fd = open(contract::kServiceStop, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);  // the supervisor stops its child too
-    if (fd >= 0) {
-        close(fd);
+    // Ensure the supervisor's directory exists even when Stop is pressed before aa-supervisor created it.
+    if (mkdir(contract::kServiceDir, 0700) == 0 || errno == EEXIST) {
+        struct stat st;
+        if (lstat(contract::kServiceDir, &st) == 0 && S_ISDIR(st.st_mode) &&
+            (st.st_uid == 0 || st.st_uid == geteuid()) && (st.st_mode & 077) == 0) {
+            int fd = open(contract::kServiceStop, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+            if (fd >= 0) {
+                close(fd);
+            }
+        }
     }
     alog("stop: sent 'quit' (service pid %d) and STOP to the supervisor", d.pid);
 }
@@ -223,11 +241,12 @@ void serviceStop() {
     if (!g_stopPid) {
         return;
     }
-    bool gone = g_stopPid > 0 ? !pidAlive(static_cast<int>(g_stopPid))
-                              : !(g_launchPid > 0 && pidAlive(g_launchPid)) && !controlPortBusy();
+    const bool stillOurs = g_stopPid > 0 && processMatches(g_stopPid, "entry-aad", g_stopStartTicks);
+    bool gone = g_stopPid > 0 ? !stillOurs : !(g_launchPid > 0 && pidAlive(g_launchPid)) && !controlPortBusy();
     if (gone) {
         alog("service (pid %d) has exited", static_cast<int>(g_stopPid));
         g_stopPid = 0;
+        g_stopStartTicks[0] = '\0';
         return;
     }
     const long waited = monoSeconds() - g_stopTime;
@@ -238,18 +257,23 @@ void serviceStop() {
         }
         return;
     }
-    // Only the session process is signalled; the supervisor always finishes its Bluetooth restore by itself.
+    // Only the verified session process is signalled; the supervisor always finishes its Bluetooth restore by itself.
     if (g_stopStage == 0 && waited >= 3) {
         alog("service pid %d still running 3 s after 'quit': SIGTERM", static_cast<int>(g_stopPid));
-        kill(g_stopPid, SIGTERM);
+        if (processMatches(g_stopPid, "entry-aad", g_stopStartTicks)) {
+            kill(g_stopPid, SIGTERM);
+        }
         g_stopStage = 1;
     } else if (g_stopStage == 1 && waited >= 15) {
         alog("service pid %d still running 15 s after 'quit': SIGKILL", static_cast<int>(g_stopPid));
-        kill(g_stopPid, SIGKILL);
+        if (processMatches(g_stopPid, "entry-aad", g_stopStartTicks)) {
+            kill(g_stopPid, SIGKILL);
+        }
         g_stopStage = 2;
     } else if (g_stopStage == 2 && waited >= 20) {
         alog("service pid %d survived SIGKILL; giving up", static_cast<int>(g_stopPid));
         g_stopPid = 0;
+        g_stopStartTicks[0] = '\0';
     }
 }
 
@@ -278,8 +302,11 @@ bool g_updateInstall = false;
 // aa-supervisor <argument> in a child of its own, its output thrown away (it writes its own reports). 0 on failure.
 pid_t startJob(const char* argument, const char* what) {
     char* argv[] = {const_cast<char*>(contract::kSupervisor), const_cast<char*>(argument), nullptr};
-    const int null = open("/dev/null", O_RDWR | O_CLOEXEC);
-    if (null < 0) {
+    int null = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (null < 0 || !ensureFdAboveStdio(null)) {
+        if (null >= 0) {
+            close(null);
+        }
         alog("%s: cannot open /dev/null (errno %d)", what, errno);
         return 0;
     }
@@ -316,9 +343,11 @@ int jobEnded(pid_t* pid, long started, long now, long limit, const char* what) {
     if (r == 0 && limit > 0 && now - started >= limit) {
         alog("%s: still running after %ld s, stopped", what, limit);
         kill(*pid, SIGKILL);
-        do {
-            r = waitpid(*pid, &status, 0);
-        } while (r < 0 && errno == EINTR);
+        // Not waited for: a job stuck in the kernel (USB stick pulled out mid-write) dies only when the kernel lets go,
+        // and waiting here would freeze the iDrive meanwhile. The status poll collects it.
+        if (!g_children.keep(*pid)) {
+            alog("%s: no slot left to collect pid %d", what, static_cast<int>(*pid));
+        }
         *pid = 0;
         return -2;
     }

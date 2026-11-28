@@ -67,14 +67,16 @@ static void readerFixture(const char* library, bool accepted) {
         close(ready[0]);
         return;
     }
-    assert(reader.open() && reader.pid() == child);
+    assert(reader.open(0, static_cast<int>(getuid())) && reader.pid() == child);
     evo::SppSlotSnapshot slot;
     assert(reader.read(0, slot) && slot.idle());
     // The service retries its preflight: an open reader refuses open(), close() allows a fresh rescan.
     assert(!reader.open());
     reader.close();
     assert(reader.pid() == 0 && !reader.read(0, slot));
-    assert(reader.open() && reader.pid() == child && reader.read(0, slot) && slot.idle());
+    // A mismatched UID filter must reject the process; a pinned PID without UID filter succeeds (e.g. root -> btmbt).
+    assert(!reader.open(0, static_cast<int>(getuid()) + 1));
+    assert(reader.open(child, -1) && reader.pid() == child && reader.read(0, slot) && slot.idle());
     assert(!reader.read(6, slot));
     assert(write(control[1], "B", 1) == 1 && read(ready[0], &value, 1) == 1);
     assert(!reader.read(0, slot));  // disagreement between actual mapped copies is rejected
@@ -123,6 +125,8 @@ static void realLibrary() {
     if (!library) {
         return;
     }
+    // Fixture library lives outside /opt/, /usr/lib/, /lib/ on the PC; default production policy rejects /tmp paths.
+    evo::SppSnapshotReader::setAllowAnyPathForTest(true);
     readerFixture(library, true);
     char folder[] = "/tmp/entry-aad-alps-XXXXXX";
     assert(mkdtemp(folder));
@@ -130,6 +134,43 @@ static void realLibrary() {
     readerFixture(copy.c_str(), true);
     copy = libraryCopy(library, folder, otherLayout);
     readerFixture(copy.c_str(), false);
+    // Production path policy rejects a library mapped from /tmp.
+    evo::SppSnapshotReader::setAllowAnyPathForTest(false);
+    copy = libraryCopy(library, folder, otherBuild);
+    {
+        int control[2], ready[2];
+        assert(pipe(control) == 0 && pipe(ready) == 0);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (!child) {
+            close(control[1]);
+            close(ready[0]);
+            uint8_t* base = static_cast<uint8_t*>(
+                mmap(0, 0xc00000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0));
+            assert(base != MAP_FAILED);
+            int fd = open(copy.c_str(), O_RDONLY);
+            struct stat st;
+            assert(fd >= 0 && fstat(fd, &st) == 0);
+            assert(mmap(base, st.st_size, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0) == base);
+            close(fd);
+            assert(write(ready[1], "R", 1) == 1);
+            char cmd;
+            while (read(control[0], &cmd, 1) == 1 && cmd != 'X') {
+            }
+            _exit(0);
+        }
+        close(control[0]);
+        close(ready[1]);
+        char v;
+        assert(read(ready[0], &v, 1) == 1);
+        evo::SppSnapshotReader untrusted;
+        assert(!untrusted.open(child));
+        assert(write(control[1], "X", 1) == 1);
+        int st = 0;
+        assert(waitpid(child, &st, 0) == child);
+        close(control[1]);
+        close(ready[0]);
+    }
     assert(unlink(copy.c_str()) == 0 && rmdir(folder) == 0);
     puts(
         "PASS real /proc reader: exported tables, sizes, load bias, GOT pointers, UUID copies, process lifetime; "

@@ -14,6 +14,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -31,6 +32,8 @@ const uint32_t kPeriodMs = 10000;
 const uint32_t kStartGraceMs = 5000;  // a connection whose session never started is dropped after this
 const unsigned kRadioTries = 3;       // nl80211 silent that many times in a row: not asked again for this connection
 const long kAnswerUs = 200000;        // the main loop never waits longer for the kernel
+const unsigned kChipTries = 3;        // chip counters missing that many times in a row: not asked again for this
+                                      // connection
 
 size_t align4(size_t n) {
     return (n + 3) & ~static_cast<size_t>(3);
@@ -117,9 +120,6 @@ void stationFigures(const Attr& nested, WifiStation& out) {
                 break;
             case NL80211_STA_INFO_TX_PACKETS:
                 out.txFrames = a.len == 4 ? number(a) : kNoFigure;
-                break;
-            case NL80211_STA_INFO_TX_RETRIES:
-                out.txRetries = a.len == 4 ? number(a) : kNoFigure;
                 break;
             case NL80211_STA_INFO_TX_FAILED:
                 out.txFailed = a.len == 4 ? number(a) : kNoFigure;
@@ -303,14 +303,11 @@ void add(std::string& line, const char* separator, const char* fmt, long long a,
     line += text;
 }
 
-// "812 frames sent, 35 retried, 0 lost" from the figures known, counted from the earlier ones when given.
+// "812 frames sent, 0 lost" from the figures known, counted from the earlier ones when given.
 std::string frames(const WifiStation& now, const WifiStation* since) {
     std::string s;
     if (now.txFrames != kNoFigure) {
         add(s, ", ", "%lld frames sent", now.txFrames - (since ? since->txFrames : 0));
-    }
-    if (now.txRetries != kNoFigure) {
-        add(s, ", ", "%lld retried", now.txRetries - (since ? since->txRetries : 0));
     }
     if (now.txFailed != kNoFigure) {
         add(s, ", ", "%lld lost", now.txFailed - (since ? since->txFailed : 0));
@@ -322,9 +319,30 @@ std::string frames(const WifiStation& now, const WifiStation* since) {
 bool continues(const WifiStation& now, const WifiStation& before) {
     return !memcmp(now.mac, before.mac, sizeof(now.mac)) &&
            (now.txFrames == kNoFigure) == (before.txFrames == kNoFigure) && now.txFrames >= before.txFrames &&
-           (now.txRetries == kNoFigure) == (before.txRetries == kNoFigure) && now.txRetries >= before.txRetries &&
            (now.txFailed == kNoFigure) == (before.txFailed == kNoFigure) && now.txFailed >= before.txFailed &&
            (now.connectedS == kNoFigure || before.connectedS == kNoFigure || now.connectedS >= before.connectedS);
+}
+
+// A small file of /sys or debugfs, read whole; false when it cannot be opened.
+bool readSmallFile(const std::string& path, std::string& out, size_t max) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    out.clear();
+    char buf[1024];
+    while (out.size() < max) {
+        const ssize_t n = read(fd, buf, sizeof(buf));
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            break;
+        }
+        out.append(buf, static_cast<size_t>(n));
+    }
+    close(fd);
+    return true;
 }
 
 }  // namespace
@@ -334,13 +352,15 @@ WifiStation::WifiStation()
       signalAvgDbm(kNoFigure),
       rxRate(kNoFigure),
       txFrames(kNoFigure),
-      txRetries(kNoFigure),
       txFailed(kNoFigure),
       connectedS(kNoFigure) {
     memset(mac, 0, sizeof(mac));
 }
 
-WifiSample::WifiSample() : atMs(0), radio(false), mhz(0), stations(0), hasStation(false), hasTcp(false) {
+ChipCounters::ChipCounters() : recoveries(kNoFigure) {}
+
+WifiSample::WifiSample()
+    : atMs(0), radio(false), mhz(0), stations(0), hasStation(false), hasTcp(false), hasChip(false) {
     tcp.roundTripUs = 0;
     tcp.resent = 0;
 }
@@ -381,6 +401,155 @@ bool readTcpLink(int fd, TcpLink& out) {
     out.roundTripUs = info.tcpi_rtt;
     out.resent = info.tcpi_total_retrans;
     return true;
+}
+
+bool parseChipCounter(const std::string& text, int64_t& out) {
+    size_t i = text.find_first_not_of(" \t\r\n");
+    if (i == std::string::npos) {
+        return false;
+    }
+    int64_t value = 0;
+    size_t digits = 0;
+    for (; i < text.size() && text[i] >= '0' && text[i] <= '9'; ++i, ++digits) {
+        if (value > 100000000000000LL) {
+            return false;  // no counter of the chip gets near: not a counter
+        }
+        value = value * 10 + (text[i] - '0');
+    }
+    if (!digits || text.find_first_not_of(" \t\r\n", i) != std::string::npos) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+bool parseRecoveryCount(const std::string& driverState, int64_t& out) {
+    static const char kName[] = "recovery_count";
+    size_t start = 0;
+    while (start < driverState.size()) {
+        size_t end = driverState.find('\n', start);
+        if (end == std::string::npos) {
+            end = driverState.size();
+        }
+        const std::string line = driverState.substr(start, end - start);
+        const size_t name = line.find_first_not_of(" \t");
+        if (name != std::string::npos && line.compare(name, sizeof(kName) - 1, kName) == 0) {
+            const size_t equal = line.find_first_not_of(" \t", name + sizeof(kName) - 1);
+            return equal != std::string::npos && line[equal] == '=' && parseChipCounter(line.substr(equal + 1), out);
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
+bool readChipCounters(const std::string& interface, ChipCounters& out) {
+    out = ChipCounters();
+    std::string phy;
+    if (!readSmallFile("/sys/class/net/" + interface + "/phy80211/name", phy, 64)) {
+        return false;
+    }
+    phy.erase(phy.find_last_not_of(" \t\r\n") + 1);
+    if (phy.empty() || phy.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos) {
+        return false;
+    }
+    // Never wl18xx/fw_stats: see wifi_link.hpp.
+    std::string text;
+    int64_t recoveries = 0;
+    if (!readSmallFile("/sys/kernel/debug/ieee80211/" + phy + "/wlcore/driver_state", text, 16384) ||
+        !parseRecoveryCount(text, recoveries)) {
+        return false;
+    }
+    out.recoveries = recoveries;
+    return true;
+}
+
+ChipCounterReader::ChipCounterReader(Read read)
+    : read_(read), started_(false), stop_(false), asked_(false), busy_(false), ok_(false), ticket_(0), answered_(0) {
+    pthread_mutex_init(&mu_, nullptr);
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&cv_, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+ChipCounterReader::~ChipCounterReader() {
+    pthread_mutex_lock(&mu_);
+    stop_ = true;
+    const bool started = started_;
+    pthread_cond_broadcast(&cv_);
+    pthread_mutex_unlock(&mu_);
+    if (started) {
+        pthread_join(thread_, nullptr);
+    }
+    pthread_cond_destroy(&cv_);
+    pthread_mutex_destroy(&mu_);
+}
+
+bool ChipCounterReader::ask(const std::string& interface, long waitUs, ChipCounters& out) {
+    aa::MutexLock lock(mu_);
+    if (!started_) {
+        if (pthread_create(&thread_, nullptr, run, this) != 0) {
+            return false;
+        }
+        started_ = true;
+    }
+    if (asked_ || busy_) {
+        return false;  // the driver still holds the read before: no second one waits behind it
+    }
+    interface_ = interface;
+    asked_ = true;
+    const unsigned long ticket = ++ticket_;
+    pthread_cond_broadcast(&cv_);
+    timespec until;
+    clock_gettime(CLOCK_MONOTONIC, &until);
+    until.tv_sec += waitUs / 1000000;
+    until.tv_nsec += (waitUs % 1000000) * 1000;
+    if (until.tv_nsec >= 1000000000L) {
+        ++until.tv_sec;
+        until.tv_nsec -= 1000000000L;
+    }
+    while (answered_ != ticket) {
+        if (pthread_cond_timedwait(&cv_, &mu_, &until) == ETIMEDOUT) {
+            break;
+        }
+    }
+    if (answered_ != ticket || !ok_) {
+        return false;
+    }
+    out = result_;
+    return true;
+}
+
+void* ChipCounterReader::run(void* self) {
+    static_cast<ChipCounterReader*>(self)->loop();
+    return nullptr;
+}
+
+void ChipCounterReader::loop() {
+    pthread_mutex_lock(&mu_);
+    for (;;) {
+        while (!asked_ && !stop_) {
+            pthread_cond_wait(&cv_, &mu_);
+        }
+        if (stop_) {
+            break;
+        }
+        asked_ = false;
+        busy_ = true;
+        const unsigned long ticket = ticket_;
+        const std::string interface = interface_;
+        pthread_mutex_unlock(&mu_);
+        ChipCounters counters;
+        const bool ok = read_(interface, counters);
+        pthread_mutex_lock(&mu_);
+        busy_ = false;
+        result_ = counters;
+        ok_ = ok;
+        answered_ = ticket;
+        pthread_cond_broadcast(&cv_);
+    }
+    pthread_mutex_unlock(&mu_);
 }
 
 std::string describeWifiLink(const WifiSample& now, const WifiSample* before) {
@@ -430,6 +599,20 @@ std::string describeWifiLink(const WifiSample& now, const WifiSample* before) {
             add(line, ", ", "%lld segment(s) sent again since it opened", now.tcp.resent);
         }
     }
+    if (now.hasChip) {
+        const int64_t restarts = now.chip.recoveries;
+        if (restarts != kNoFigure) {
+            const bool known = before && before->hasChip && before->chip.recoveries != kNoFigure &&
+                               restarts >= before->chip.recoveries;
+            const int64_t more = known ? restarts - before->chip.recoveries : restarts;
+            if (more > 0) {
+                add(line, "; ",
+                    known ? "chip firmware restarted %lld time(s)"
+                          : "chip firmware restarted %lld time(s) since the unit started",
+                    more);
+            }
+        }
+    }
     if (now.apps.read) {
         const bool idle = now.apps.state == 1 && now.apps.transport == 0;
         if (now.apps.connected || idle) {
@@ -450,9 +633,11 @@ WifiLinkLog::WifiLinkLog()
       seenActive_(false),
       hasBefore_(false),
       radioGone_(false),
+      chipGone_(false),
       nextMs_(0),
       sinceMs_(0),
-      radioFailures_(0) {
+      radioFailures_(0),
+      chipFailures_(0) {
     pthread_mutex_init(&lock_, nullptr);
 }
 
@@ -487,8 +672,8 @@ void WifiLinkLog::connected(int fd) {
     forget();
     fd_ = fcntl(fd, F_DUPFD_CLOEXEC, 0);  // never inherited by the programs the service starts
     first_ = true;
-    seenActive_ = hasBefore_ = radioGone_ = false;
-    radioFailures_ = 0;
+    seenActive_ = hasBefore_ = radioGone_ = chipGone_ = false;
+    radioFailures_ = chipFailures_ = 0;
 }
 
 void WifiLinkLog::turn(uint32_t nowMs, bool sessionActive) {
@@ -543,6 +728,18 @@ void WifiLinkLog::sample(uint32_t nowMs) {
             radioGone_ = true;
             ELOG("WifiLink", "no Wi-Fi figures from the kernel for %s (nl80211, errno %d): TCP figures only",
                  interface_.c_str(), errno);
+        }
+    }
+    if (!chipGone_) {
+        if (chip_.ask(interface_, kAnswerUs, now.chip)) {
+            now.hasChip = true;
+            chipFailures_ = 0;
+        } else if (++chipFailures_ >= kChipTries) {
+            chipGone_ = true;
+            ELOG("WifiLink",
+                 "no WL18xx driver state from debugfs for %s (not mounted, another chip, or the driver slow to "
+                 "answer): the lines go on without it",
+                 interface_.c_str());
         }
     }
     if (appsProbe_) {

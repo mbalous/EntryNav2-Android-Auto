@@ -27,23 +27,40 @@ namespace evo {
 
 const off_t kKeptLogMax = 512 * 1024;
 
-// What fd holds, from its start, into path, through a temporary file renamed over it. False on any error, path then
-// left as it was.
-inline bool copyToFile(int fd, const char* path) {
+// Up to the last maxBytes of fd into path, through a temporary file renamed over it (never following symlinks). One
+// fixed name: one writer (the supervisor), and a copy cut short by a power-off is replaced by the next, never left
+// behind. False on any error, path then left as it was.
+inline bool copyToFile(int fd, const char* path, off_t maxBytes = kKeptLogMax) {
     char tmp[256];
     const int len = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     if (len < 0 || len >= static_cast<int>(sizeof(tmp))) {
         return false;
     }
-    const int out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    unlink(tmp);
+    const int out = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (out < 0) {
         return false;
     }
-    char buf[16384];
     off_t at = 0;
+    struct stat st;
+    if (maxBytes > 0 && fstat(fd, &st) == 0 && st.st_size > maxBytes) {
+        at = st.st_size - maxBytes;
+    }
+    char buf[16384];
+    off_t copied = 0;
     bool ok = true;
     while (ok) {
-        const ssize_t n = pread(fd, buf, sizeof(buf), at);
+        size_t chunk = sizeof(buf);
+        if (maxBytes > 0) {
+            const off_t left = maxBytes - copied;
+            if (left <= 0) {
+                break;
+            }
+            if (static_cast<off_t>(chunk) > left) {
+                chunk = static_cast<size_t>(left);
+            }
+        }
+        const ssize_t n = pread(fd, buf, chunk, at);
         if (n < 0 && errno == EINTR) {
             continue;
         }
@@ -52,6 +69,7 @@ inline bool copyToFile(int fd, const char* path) {
             break;
         }
         at += n;
+        copied += n;
         for (ssize_t done = 0; ok && done < n;) {
             const ssize_t w = write(out, buf + done, static_cast<size_t>(n - done));
             if (w < 0 && errno == EINTR) {
@@ -82,7 +100,7 @@ inline int openServiceLog(const char* marker, const char* kept, const char* kept
     if (stat(kept, &st) == 0 && st.st_size > kKeptLogMax) {
         rename(kept, keptOld);  // nothing writes into it now: the supervisor that did has ended
     }
-    const int fd = open(kept, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    const int fd = open(kept, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd >= 0) {
         unlink(ram);  // an older log or link of that name
         if (symlink(kept, ram) != 0) {
@@ -128,8 +146,8 @@ inline KeptLogTrim trimKeptLog(int fd, const char* kept, const char* keptOld, of
     if (!current) {
         return ftruncate(fd, 0) == 0 ? KeptLogTrim::kEmptied : KeptLogTrim::kWithin;
     }
-    const int in = open(kept, O_RDONLY | O_CLOEXEC);
-    const bool copied = in >= 0 && copyToFile(in, keptOld);
+    const int in = open(kept, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    const bool copied = in >= 0 && copyToFile(in, keptOld, max);
     if (in >= 0) {
         close(in);
     }

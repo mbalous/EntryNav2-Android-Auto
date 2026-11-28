@@ -3,6 +3,7 @@
 // OMAP dma-buf pool (see omap_dmabuf.hpp).
 #include "omap_dmabuf.hpp"
 
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -22,6 +23,7 @@ bool DmaBufPool::init(unsigned count, uint32_t bufSize) {
         ELOG("Video", "drmOpen(omapdrm) failed");
         return false;
     }
+    fcntl(drmFd_, F_SETFD, FD_CLOEXEC);
     dev_ = omap_device_new(drmFd_);
     if (!dev_) {
         ELOG("Video", "omap_device_new failed");
@@ -38,6 +40,9 @@ bool DmaBufPool::init(unsigned count, uint32_t bufSize) {
             return false;
         }
         b.fd = omap_bo_dmabuf(b.bo);
+        if (b.fd >= 0) {
+            fcntl(b.fd, F_SETFD, FD_CLOEXEC);
+        }
         b.map = static_cast<uint8_t*>(omap_bo_map(b.bo));
         b.size = bufSize;
         b.inFlight = false;

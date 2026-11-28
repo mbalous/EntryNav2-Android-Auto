@@ -24,8 +24,8 @@ const uint32_t kHeldMs = 30000;       // a session that lasted this long worked
 const unsigned kMaxSilentTries = 24;  // sessions in a row the phone said nothing in (5 s each) before a reset
 const unsigned kMaxClaimTries = 10;   // turns in a row its interface was held or not ready
 const unsigned kMaxAskFailures = 3;   // switch requests that failed half-way
+const unsigned kMaxUnanswered = 5;    // per phone: switch requests taken, with no accessory back
 const uint32_t kUnpluggedMs = 6000;   // no phone on the bus for this long: it was unplugged
-const uint32_t kReturnMs = 5000;      // how long the return as an accessory is watched closely
 const unsigned kReturnStepUs = 20000;
 
 class Loop {
@@ -35,10 +35,6 @@ public:
           host_(host),
           bridge_(nullptr),
           bridgeStart_(0),
-          resets_(0),
-          silent_(0),
-          claimTries_(0),
-          askFailures_(0),
           quietSince_(0),
           quiet_(false),
           emptySince_(0),
@@ -107,7 +103,8 @@ private:
             emptySince_ = monoMs();
         } else if (monoMs() - emptySince_ >= kUnpluggedMs) {
             ours_.clear();
-            resets_ = silent_ = claimTries_ = askFailures_ = 0;
+            unanswered_.clear();
+            counts_.clear();
         }
     }
 
@@ -116,6 +113,7 @@ private:
         for (std::map<std::string, unsigned>::iterator it = leftAlone_.begin(); it != leftAlone_.end();) {
             UsbPhone now;
             if (!readUsbDevice(setup_.sysfs, it->first, now) || now.address != it->second) {
+                counts_.erase(it->first);
                 leftAlone_.erase(it++);
             } else {
                 ++it;
@@ -133,14 +131,15 @@ private:
              left    ? "the phone left"
              : spoke ? "session ended"
                      : "the phone said nothing");
+        PortCounts& c = counts_[bridgePort_];
         if (lasted >= kHeldMs) {
-            resets_ = 0;
+            c.resets = 0;
         }
         if (spoke) {
-            silent_ = 0;
+            c.silent = 0;
             ours_.erase(bridgePort_);  // its Android Auto is over: only a fresh accessory starts a new one
-        } else if (++silent_ >= kMaxSilentTries) {
-            silent_ = 0;
+        } else if (++c.silent >= kMaxSilentTries) {
+            c.silent = 0;
             ours_.erase(bridgePort_);
         }
     }
@@ -157,18 +156,24 @@ private:
             device = setup_.open(phone.bus, phone.address);
         }
         if (!device || !device->claimInterface(0)) {
-            const int why = errno;
+            const int why = described ? errno : 0;
             delete device;
-            if (++claimTries_ >= kMaxClaimTries) {
-                claimTries_ = 0;
+            PortCounts& c = counts_[phone.port];
+            if (++c.claimTries >= kMaxClaimTries) {
+                c.claimTries = 0;
+                // Held by another program (EBUSY): most likely the car's own USB service, which also opens a new
+                // accessory, took the one our request made. The phone is reset and asked again, at most 3 times
+                // (resetPhone), so Android Auto gets it back; never taken from under its holder while it holds it.
                 ELOG("UsbLoop", "accessory on %s not available (%s): %s", phone.port.c_str(),
                      !described ? "not set up by the kernel" : strerror(why),
-                     why == EBUSY ? "another program holds it, it is left to it" : "giving this one up");
+                     described && why == EBUSY ? "another program holds it: the phone is reset, then asked again, "
+                                                 "within its limit"
+                                               : "giving this one up");
                 ours_.erase(phone.port);  // the next look resets the phone, within its limit
             }
             return false;
         }
-        claimTries_ = 0;
+        counts_[phone.port].claimTries = 0;
         int fds[2];
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) != 0) {
             device->releaseInterface(0);
@@ -191,13 +196,14 @@ private:
     }
 
     bool resetPhone(const UsbPhone& phone) {
-        if (resets_ >= kMaxResets) {
+        PortCounts& c = counts_[phone.port];
+        if (c.resets >= kMaxResets) {
             ELOG("UsbLoop", "phone on %s still not starting Android Auto after %u resets: unplug it and plug it again",
-                 phone.port.c_str(), resets_);
+                 phone.port.c_str(), c.resets);
             leaveAlone(phone);
             return false;
         }
-        ++resets_;
+        ++c.resets;
         UsbDevice* device = setup_.open(phone.bus, phone.address);
         const bool done = device && device->reset();
         const int why = errno;
@@ -209,7 +215,7 @@ private:
             return false;
         }
         ELOG("UsbLoop", "phone on %s was left in accessory mode: reset %u of %u, then it is asked again",
-             phone.port.c_str(), resets_, kMaxResets);
+             phone.port.c_str(), c.resets, kMaxResets);
         ours_.insert(phone.port);  // whatever comes back on this port is fresh
         quiet_ = true;
         quietSince_ = monoMs();
@@ -233,29 +239,46 @@ private:
             leaveAlone(phone);
             return false;
         }
+        PortCounts& c = counts_[phone.port];
         if (result == kSwitchFailed) {
-            if (++askFailures_ >= kMaxAskFailures) {
-                askFailures_ = 0;
+            if (++c.askFailures >= kMaxAskFailures) {
+                c.askFailures = 0;
                 ELOG("UsbLoop", "phone %04x:%04x on %s refused the accessory requests: left alone", phone.vendor,
                      phone.product, phone.port.c_str());
                 leaveAlone(phone);
             }
             return false;
         }
-        askFailures_ = 0;
+        c.askFailures = 0;
         ELOG("UsbLoop", "phone %04x:%04x on %s asked to start Android Auto (accessory protocol %u)", phone.vendor,
              phone.product, phone.port.c_str(), protocol);
         ours_.insert(phone.port);
         // The car's own USB service opens new accessories too: be there when it comes back.
         const uint32_t begin = monoMs();
-        while (!host_.stopRequested() && monoMs() - begin < kReturnMs) {
+        while (!host_.stopRequested() && monoMs() - begin < setup_.returnMs) {
             UsbPhone back;
             AccessoryEndpoints endpoints;
             if (readUsbDevice(setup_.sysfs, phone.port, back) && back.accessory && back.address != phone.address &&
                 readAccessoryEndpoints(setup_.sysfs, phone.port, endpoints)) {
+                unanswered_.erase(phone.port);
                 return true;
             }
             usleep(kReturnStepUs);
+        }
+        // Not back yet. A slow phone that comes back later is used at the next look; one that never does is asked
+        // again, a few times only: it does not do what it says.
+        Unanswered& count = unanswered_[phone.port];
+        if (count.address != phone.address) {
+            count.address = phone.address;
+            count.asks = 0;
+        }
+        if (++count.asks >= kMaxUnanswered) {
+            ELOG("UsbLoop",
+                 "phone %04x:%04x on %s took the accessory request %u times without coming back as an accessory: left "
+                 "alone, unplug it and plug it again",
+                 phone.vendor, phone.product, phone.port.c_str(), count.asks);
+            unanswered_.erase(phone.port);
+            leaveAlone(phone);
         }
         return false;
     }
@@ -283,9 +306,21 @@ private:
     UsbBridge* bridge_;
     std::string bridgePort_;
     uint32_t bridgeStart_;
+    // A phone's switch requests taken with no accessory back, by port: for the phone at that address.
+    struct Unanswered {
+        unsigned address, asks;
+        Unanswered() : address(0), asks(0) {}
+    };
+
+    struct PortCounts {
+        unsigned resets, silent, claimTries, askFailures;
+        PortCounts() : resets(0), silent(0), claimTries(0), askFailures(0) {}
+    };
+
     std::set<std::string> ours_;                 // ports whose accessory this loop made, or reset
     std::map<std::string, unsigned> leftAlone_;  // port and address of the devices not to touch again
-    unsigned resets_, silent_, claimTries_, askFailures_;
+    std::map<std::string, Unanswered> unanswered_;
+    std::map<std::string, PortCounts> counts_;
     uint32_t quietSince_;
     bool quiet_;  // just after a reset: the bus is not looked at
     uint32_t emptySince_;

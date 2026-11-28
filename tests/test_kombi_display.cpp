@@ -178,6 +178,23 @@ void metresFromText() {
     m.hasMetres = true;
     m.metres = 42;
     CHECK(metresToManeuver(m, metres) && metres == 42);  // the phone's metres first
+    // No number, a negative or a farther one than 100 000 km: no distance, rather than one cast into the cluster.
+    const char* const absurd[] = {"inf", "-inf", "nan", "-5", "1e300", "200000"};
+    m.hasMetres = false;
+    m.distanceUnit = kUnitKilometres;
+    for (size_t i = 0; i < sizeof(absurd) / sizeof(absurd[0]); ++i) {
+        m.distanceText = absurd[i];
+        CHECK(!metresToManeuver(m, metres));
+    }
+    m.distanceText = "100000";
+    CHECK(metresToManeuver(m, metres) && metres == 1e8);
+    m.hasMetres = true;
+    m.metres = -1;
+    CHECK(!metresToManeuver(m, metres));
+    m.metres = kFarthestMetres + 1;
+    CHECK(!metresToManeuver(m, metres));
+    m.metres = kFarthestMetres;
+    CHECK(metresToManeuver(m, metres) && metres == 1e8);
 }
 
 // At most three characters with a cluster unit: the phone's text when it fits, else from the metres in its system.
@@ -201,6 +218,13 @@ void shortTexts() {
         {"350", kUnitYards, 320, "350", kUnitYards},
         {"xxxx", kUnitYards, 100, "100", kUnitYards},
         {"abc", kUnitUnknown, -1, "-", kUnitUnknown},
+        {"1,5", kUnitKilometresTenths, 1500, "1,5", kUnitKilometresTenths},
+        // A short text that is no number is not shown as sent: from the metres, else "-".
+        {"inf", kUnitMetres, -1, "-", kUnitMetres},
+        {"nan", kUnitMetres, 300, "300", kUnitMetres},
+        {"-5", kUnitMetres, -1, "-", kUnitMetres},
+        {"abc", kUnitFeet, 137, "400", kUnitFeet},
+        {".", kUnitMetres, -1, "-", kUnitMetres},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         Maneuver m;

@@ -457,6 +457,63 @@ int main() {
         link.closeLink();
     }
     {
+        // A phone that connects again while its previous link is still held (back in 0.1 s on a MINI F56, #88): by
+        // its reader, which has not closed it yet, then by bytes still on their way to that reader. The new link opens
+        // once the old one is closed, with what the phone sent meanwhile; a connection that goes before leaves none.
+        evo::AlpsSppLink link;
+        CHECK(link.start(2));
+        fake.device(true, 2);
+        int fd = link.waitLink(1000);
+        CHECK(fd >= 0);
+        fake.device(false, 2);
+        CHECK(readable(fd));
+        uint8_t v;
+        CHECK(read(fd, &v, 1) == 0);  // the reader sees the end; its descriptor stays borrowed until closeLink
+        fake.device(true, 2);
+        fake.data(2, bytes);
+        sleepMs(50);
+        link.closeLink();
+        int again = link.waitLink(1000);
+        CHECK(again >= 0);
+        CHECK(receive(again, bytes.size()) == bytes);
+        // More than the socket takes, so that the old connection's last bytes are still queued when it goes.
+        const std::vector<uint8_t> old(55000, 0x42);
+        for (int i = 0; i < 5; ++i) {
+            fake.data(2, old);
+        }
+        fake.device(false, 2);
+        sleepMs(100);
+        CHECK(link.linkUp());  // still delivering them
+        std::vector<uint8_t> first(bytes.rbegin(), bytes.rend());
+        fake.device(true, 2);
+        fake.data(2, first);
+        sleepMs(50);
+        CHECK(receive(again, 5 * old.size()) == std::vector<uint8_t>(5 * old.size(), 0x42));
+        CHECK(readable(again));
+        CHECK(read(again, &v, 1) == 0);  // nothing of the new connection in the old stream
+        link.closeLink();
+        int third = link.waitLink(1000);
+        CHECK(third >= 0);
+        CHECK(receive(third, first.size()) == first);
+        // The new connection goes before the old link is closed: nothing opens, the next one does.
+        fake.device(false, 2);
+        CHECK(readable(third));
+        CHECK(read(third, &v, 1) == 0);
+        fake.device(true, 2);
+        fake.data(2, bytes);
+        fake.device(false, 2);
+        sleepMs(50);
+        link.closeLink();
+        CHECK(link.waitLink(100) == -1);
+        fake.device(true, 2);
+        int fourth = link.waitLink(1000);
+        CHECK(fourth >= 0);
+        fake.data(2, first);
+        CHECK(receive(fourth, first.size()) == first);
+        link.closeLink();
+    }
+    {
+        CHECK(evo::queryAlpsServiceUid() == static_cast<int>(getuid()));
         evo::AlpsSppLink link;
         CHECK(link.start(2));
         DBusError e;
@@ -467,10 +524,13 @@ int main() {
         }
         CHECK(!link.running());
         CHECK(link.waitLink(10) == -1);
+        CHECK(evo::queryAlpsServiceUid() == -1);
         evo::AlpsSppLink unavailable;
         CHECK(!unavailable.start(2));
         unavailable.stop();
     }
-    puts("PASS D-Bus SPP: observation, signatures, instance/profil, HLI, flux, ACK, EOF, delais et arret");
+    puts(
+        "PASS D-Bus SPP: observation, signatures, instance/profil, HLI, flux, ACK, EOF, reconnexion pendant l'emprunt, "
+        "delais et arret");
     return 0;
 }

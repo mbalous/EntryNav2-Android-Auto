@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -51,6 +52,9 @@ public:
     bool reset() override { return ioctl(fd_, USBDEVFS_RESET, 0) == 0; }
 
     bool submit(UsbTransfer* transfer) override {
+        if (!transfer || transfer->data.size() > static_cast<size_t>(INT_MAX)) {
+            return false;
+        }
         usbdevfs_urb* urb = new usbdevfs_urb;
         memset(urb, 0, sizeof(*urb));
         urb->type = USBDEVFS_URB_TYPE_BULK;
@@ -79,7 +83,11 @@ public:
         }
         UsbTransfer* transfer = static_cast<UsbTransfer*>(urb->usercontext);
         transfer->status = urb->status;
-        transfer->done = urb->actual_length > 0 ? static_cast<size_t>(urb->actual_length) : 0;
+        size_t done = urb->actual_length > 0 ? static_cast<size_t>(urb->actual_length) : 0;
+        if (done > transfer->data.size()) {
+            done = transfer->data.size();
+        }
+        transfer->done = done;
         transfer->request = nullptr;
         flying_.erase(urb);
         delete urb;

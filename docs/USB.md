@@ -40,7 +40,8 @@ Le fichier est lu à chaque démarrage d'Android Auto et vaut jusqu'à son arrê
    ([protocole AOA](https://source.android.com/docs/core/interaction/accessories/aoa) : requêtes 51, 52 et 53). Un
    appareil qui ne répond pas à la première n'est plus sollicité.
 4. Le téléphone revient en accessoire sur la même prise : le service prend son interface et y fait passer la session
-   Android Auto, la même qu'en sans fil.
+   Android Auto, la même qu'en sans fil. Un téléphone qui accepte la demande sans jamais revenir en accessoire est
+   sollicité cinq fois au plus, puis laissé tranquille jusqu'au prochain branchement.
 
 Le service ne prend jamais une interface USB à un pilote ou à un programme BMW. Quand le téléphone est en mode
 accessoire sans que le service puisse s'en servir (resté ainsi après un *Arrêter*, ou tenu par un programme de la

@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <string>
+#include "atomic_file.hpp"
 
 namespace evo {
 
@@ -83,36 +83,39 @@ private:
 
 // The service is the only writer; rename publishes a complete request, without changing the service's focus.
 inline bool writeMediaRecall(const char* path, int pid, uint32_t now) {
-    const std::string temporary = std::string(path) + ".tmp";
-    FILE* file = fopen(temporary.c_str(), "w");
-    if (!file) {
+    char line[64];
+    const int n = snprintf(line, sizeof(line), "media-recall %d %u\n", pid, static_cast<unsigned>(now));
+    if (n <= 0 || n >= static_cast<int>(sizeof(line))) {
         return false;
     }
-    const bool written = fprintf(file, "media-recall %d %u\n", pid, static_cast<unsigned>(now)) > 0;
-    const bool closed = fclose(file) == 0;
-    if (written && closed && rename(temporary.c_str(), path) == 0) {
-        return true;
-    }
-    unlink(temporary.c_str());
-    return false;
+    return writeAtomicFile(path, line, static_cast<size_t>(n), 0644);
 }
 
 // Detach before reading: a newer request published meanwhile stays for the next poll. Every request is consumed,
 // including one from an old process, a malformed file, or a request more than two monotonic seconds old.
 inline bool takeMediaRecall(const char* path, int expectedPid, uint32_t now) {
-    const std::string reading = std::string(path) + ".read";
-    if (rename(path, reading.c_str()) != 0) {
+    if (!path || !*path) {
         return false;
     }
-    FILE* file = fopen(reading.c_str(), "r");
+    char reading[256];
+    const int n = snprintf(reading, sizeof(reading), "%s.read.%ld", path, static_cast<long>(getpid()));
+    if (n <= 0 || n >= static_cast<int>(sizeof(reading))) {
+        return false;
+    }
+    unlink(reading);
+    if (rename(path, reading) != 0) {
+        return false;
+    }
+    char buf[96];
+    const ssize_t got = readRegularTextFile(reading, buf, sizeof(buf), true);
+    unlink(reading);
+    if (got <= 0) {
+        return false;
+    }
     int pid = 0;
     unsigned at = 0;
     char extra;
-    const int fields = file ? fscanf(file, "media-recall %d %u %c", &pid, &at, &extra) : 0;
-    if (file) {
-        fclose(file);
-    }
-    unlink(reading.c_str());
+    const int fields = sscanf(buf, "media-recall %d %u %c", &pid, &at, &extra);
     return fields == 2 && pid > 1 && pid == expectedPid && static_cast<uint32_t>(now - at) <= 2000;
 }
 

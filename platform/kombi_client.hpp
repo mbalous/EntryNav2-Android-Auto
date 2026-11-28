@@ -23,7 +23,9 @@
 namespace evo {
 namespace kombi {
 
-enum SendOutcome { kSent = 0, kLinkDown = 1, kRefused = 2 };
+// kLinkDown: the connection failed once a request had gone out on it. kUnreachable: no connection could be made, so
+// nothing was written (no KOMBI on the Ethernet, as in an F-series car).
+enum SendOutcome { kSent = 0, kLinkDown = 1, kRefused = 2, kUnreachable = 3 };
 
 class ClusterLink {
 public:

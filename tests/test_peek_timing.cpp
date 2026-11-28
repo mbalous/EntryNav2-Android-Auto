@@ -104,12 +104,13 @@ bool hardKeyAndScreen(uint32_t t) {
     evo::PeekTiming p = shownAt(t);
     p.volumeKey(t, false);
     p.driveMode(t);
-    CHECK(p.hardKey() && !p.hideFrom() && !p.hideUntil() && !p.dimUntil());
+    p.popup(t, true);
+    CHECK(p.hardKey() && !p.hideFrom() && !p.hideUntil() && !p.dimUntil() && !p.popupOpen());
     p.volumeKey(t, false);
     p.popup(t, true);
     evo::PeekTiming::Picture picture = p.turn(t + 10, false);  // camera, menu, session gone: every peek ends
     CHECK(!picture.shown && picture.opacity == 1.f && !p.onScreen() && !p.visible());
-    CHECK(!p.hideFrom() && !p.hideUntil() && !p.dimUntil());
+    CHECK(!p.hideFrom() && !p.hideUntil() && !p.dimUntil() && !p.popupOpen());
     return true;
 }
 

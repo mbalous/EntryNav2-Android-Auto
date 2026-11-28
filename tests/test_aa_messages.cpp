@@ -113,10 +113,15 @@ void routes() {
     CHECK(routeOf(2, 0x8002) == Route::kOther && routeOf(0, 0x8002) == Route::kControl);
     CHECK(routeOf(6, 0x8007) == Route::kVideoFocusRequest && routeOf(6, 0x8008) == Route::kVideoFocusNotice);
     CHECK(routeOf(2, 0x8007) == Route::kOther && routeOf(4, 0x8008) == Route::kOther);
+    // Media data and codec configuration on the media sinks of the service discovery only: the main display, the two
+    // other displays of the template, the guidance and media audio.
     CHECK(routeOf(6, 0x0000) == Route::kMedia && routeOf(6, 0x0001) == Route::kMedia);
-    CHECK(routeOf(0, 0x0000) == Route::kMedia && routeOf(0, 0x0001) == Route::kMedia);
-    CHECK(routeOf(10, 0x0000) == Route::kMedia && routeOf(12, 0x0001) == Route::kMedia);
-    CHECK(routeOf(1, 0x0001) == Route::kMedia && routeOf(14, 0x0000) == Route::kMedia);
+    CHECK(routeOf(2, 0x0000) == Route::kMedia && routeOf(4, 0x0001) == Route::kMedia);
+    CHECK(routeOf(8, 0x0000) == Route::kMedia && routeOf(9, 0x0000) == Route::kMedia);
+    CHECK(routeOf(0, 0x0000) == Route::kControl && routeOf(0, 0x0001) == Route::kControl);
+    CHECK(routeOf(10, 0x0000) == Route::kOther && routeOf(12, 0x0001) == Route::kOther);
+    CHECK(routeOf(1, 0x0001) == Route::kOther && routeOf(14, 0x0000) == Route::kOther);
+    CHECK(routeOf(38, 0x0000) == Route::kOther && routeOf(200, 0x0001) == Route::kOther);
     // The rest of the control channel, and anything else.
     CHECK(routeOf(0, 0x0002) == Route::kControl && routeOf(0, 0x000b) == Route::kControl);
     CHECK(routeOf(0, 0x8003) == Route::kControl && routeOf(0, 0x8008) == Route::kControl);

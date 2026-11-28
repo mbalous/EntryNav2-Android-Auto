@@ -21,17 +21,19 @@ void runWirelessLoop(AlpsSppLink& bt, const aa::ApInfo& ap, uint16_t port, Wirel
         aa::WirelessSetup setup(fd, ap, port, kPeekMs);
         // Lifecycle guard: a link that comes up while a phone connection is prepared or its session runs must not
         // restart that projection: no WifiStartRequest goes into it. On this car the phone opens one about every
-        // 12 s during a session; it is listened to, so the log says what the phone expects there.
+        // 12 s during a session; it is listened to, so the log says what the phone expects there. A link that stopped
+        // while listened to, closed or found to be the BMW app's (its BCL header, already read: a handshake's own
+        // listen would not see it again), is closed with nothing written, as a handshake leaves a BMW app link.
+        bool open = true;
         if (host.projectionBusy()) {
             const uint32_t sinceMs = monoMs();
-            bool open = true;
             while (open && host.projectionBusy() && !host.stopRequested() && bt.linkUp()) {
                 open = setup.listen(100);
             }
-            ELOG("WirelessLoop", "Bluetooth link back while Android Auto runs: %u message(s) from the phone in %u ms",
-                 setup.heard(), monoMs() - sinceMs);
+            ELOG("WirelessLoop", "Bluetooth link back while Android Auto runs: %u message(s) from the phone in %u ms%s",
+                 setup.heard(), monoMs() - sinceMs, open ? "" : "; closed, or not Android Auto's: nothing written");
         }
-        if (host.stopRequested() || !bt.linkUp()) {
+        if (!open || host.stopRequested() || !bt.linkUp()) {
             bt.closeLink();
             continue;
         }

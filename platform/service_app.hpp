@@ -10,7 +10,6 @@
 #define ENTRY_AAD_PLATFORM_SERVICE_APP_HPP
 
 #include <pthread.h>
-#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -54,8 +53,9 @@ public:
         bool idleForAdvert;   // nothing connected or being prepared: the advertisement may be refreshed
     };
 
-    // port: the TCP port told to the phone. quit: the main loop's flag, set by the "quit" command.
-    ServiceApp(uint16_t port, bool videoEnabled, volatile sig_atomic_t* quit);
+    // port: the TCP port told to the phone. quit: the main loop's flag, set by the "quit" command (control thread) and
+    // by the signal handler, read by the main loop and the vMOST thread: a lock-free atomic, not a volatile.
+    ServiceApp(uint16_t port, bool videoEnabled, std::atomic<int>* quit);
     ~ServiceApp();
 
     // ---- main loop ----
@@ -144,7 +144,7 @@ private:
     // A phone connection, from the TCP listener or the USB loop: the video is made ready and the session starts.
     void startProjection(int fd, bool overUsb);
 
-    volatile sig_atomic_t* quit_;
+    std::atomic<int>* quit_;
 };
 
 }  // namespace evo

@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" role="img" aria-labelledby="t d">
+  <title id="t">EntryNav2 Android Auto</title>
+  <desc id="d">An Android phone sends Android Auto over Bluetooth and Wi-Fi to the wide screen of an EntryNav2 head unit, which shows a map with a route and the next turn.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1120"/>
+      <stop offset="1" stop-color="#18223a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.62" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#2563eb" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#2563eb" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#162032"/>
+      <stop offset="1" stop-color="#0f1726"/>
+    </linearGradient>
+    <clipPath id="map"><rect x="532" y="72" width="636" height="256" rx="12"/></clipPath>
+    <clipPath id="phonescreen"><rect x="122" y="96" width="126" height="218" rx="14"/></clipPath>
+  </defs>
+
+  <rect width="1280" height="400" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="400" rx="28" fill="url(#glow)"/>
+  <g fill="#334155" opacity="0.35">
+    <circle cx="60" cy="50" r="1.6"/><circle cx="1220" cy="360" r="1.6"/><circle cx="1230" cy="40" r="1.6"/>
+    <circle cx="40" cy="350" r="1.6"/><circle cx="330" cy="70" r="1.6"/><circle cx="360" cy="340" r="1.6"/>
+  </g>
+
+  <!-- phone -->
+  <rect x="110" y="70" width="150" height="270" rx="28" fill="#0f172a" stroke="#475569" stroke-width="3"/>
+  <rect x="165" y="80" width="40" height="6" rx="3" fill="#334155"/>
+  <rect x="122" y="96" width="126" height="218" rx="14" fill="url(#screen)"/>
+  <g clip-path="url(#phonescreen)">
+    <path d="M110 170 L270 150 M110 250 L270 230 M150 90 L170 330 M215 90 L230 330" stroke="#22304a" stroke-width="7"/>
+    <path d="M140 290 C160 250 150 220 185 205 S 225 160 222 118" fill="none" stroke="#60a5fa" stroke-width="6"
+          stroke-linecap="round"/>
+    <circle cx="222" cy="118" r="7" fill="#f87171"/>
+  </g>
+
+  <!-- link -->
+  <g fill="none" stroke="#60a5fa" stroke-linecap="round" stroke-width="5">
+    <path d="M298 168 Q324 205 298 242" opacity="0.95"/>
+    <path d="M326 148 Q362 205 326 262" opacity="0.6"/>
+    <path d="M354 128 Q400 205 354 282" opacity="0.32"/>
+  </g>
+
+  <!-- head unit screen, 1280x480 shape -->
+  <rect x="440" y="60" width="740" height="280" rx="22" fill="#020617" stroke="#334155" stroke-width="3"/>
+  <rect x="452" y="72" width="716" height="256" rx="12" fill="#0b1220"/>
+  <g>
+    <rect x="452" y="72" width="80" height="256" rx="12" fill="#0a0f1c"/>
+    <circle cx="492" cy="112" r="17" fill="#1f2937"/><circle cx="492" cy="112" r="7" fill="#60a5fa"/>
+    <circle cx="492" cy="164" r="17" fill="#1f2937"/><rect x="484" y="156" width="16" height="16" rx="4" fill="#f59e0b"/>
+    <circle cx="492" cy="216" r="17" fill="#1f2937"/><path d="M484 224 L492 207 L500 224 Z" fill="#34d399"/>
+    <circle cx="492" cy="268" r="17" fill="#1f2937"/><circle cx="492" cy="268" r="7" fill="none" stroke="#e5e7eb" stroke-width="3"/>
+  </g>
+  <g clip-path="url(#map)">
+    <rect x="532" y="72" width="636" height="256" fill="url(#screen)"/>
+    <rect x="840" y="96" width="120" height="70" rx="14" fill="#13261f"/>
+    <rect x="1040" y="230" width="110" height="80" rx="14" fill="#13261f"/>
+    <g stroke="#22304a" stroke-linecap="round">
+      <path d="M520 250 L1180 196" stroke-width="16"/>
+      <path d="M700 60 L760 340" stroke-width="12"/>
+      <path d="M990 60 L1010 340" stroke-width="12"/>
+      <path d="M520 130 L1180 112" stroke-width="8"/>
+      <path d="M860 220 L905 340 M1080 60 L1130 200" stroke-width="7"/>
+    </g>
+    <path d="M610 300 C650 262 700 250 745 236 S 820 214 880 205 S 980 190 1000 150 S 1010 112 1060 104"
+          fill="none" stroke="#3b82f6" stroke-opacity="0.35" stroke-width="18" stroke-linecap="round"/>
+    <path d="M610 300 C650 262 700 250 745 236 S 820 214 880 205 S 980 190 1000 150 S 1010 112 1060 104"
+          fill="none" stroke="#60a5fa" stroke-width="7" stroke-linecap="round"/>
+    <path d="M610 286 L622 312 L610 305 L598 312 Z" fill="#ffffff" stroke="#3b82f6" stroke-width="3"
+          stroke-linejoin="round"/>
+    <circle cx="1060" cy="104" r="11" fill="#f87171" stroke="#0b1220" stroke-width="3"/>
+    <rect x="1010" y="284" width="140" height="32" rx="16" fill="#111827" stroke="#1f2937"/>
+    <text x="1080" y="305" fill="#e5e7eb" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="15"
+          text-anchor="middle">12 min · 8.4 km</text>
+  </g>
+  <rect x="550" y="88" width="210" height="72" rx="14" fill="#166534"/>
+  <path d="M574 146 L574 116 Q574 106 584 106 L600 106" fill="none" stroke="#ffffff" stroke-width="6"
+        stroke-linecap="round"/>
+  <path d="M597 96 L611 106 L597 116 Z" fill="#ffffff"/>
+  <text x="626" y="118" fill="#ffffff" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="24"
+        font-weight="700">300 m</text>
+  <text x="626" y="142" fill="#bbf7d0" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif"
+        font-size="14">turn right</text>
+
+  <g fill="#94a3b8" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="15" text-anchor="middle">
+    <text x="185" y="372">Android phone</text>
+    <text x="350" y="322">Bluetooth, then Wi-Fi</text>
+    <text x="810" y="372">EntryNav2 head unit</text>
+  </g>
+</svg>

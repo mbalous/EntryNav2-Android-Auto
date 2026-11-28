@@ -16,16 +16,17 @@
 CXX       = arm-linux-gnueabihf-g++
 SYSROOT  ?= /sysroot
 ARCH      = -march=armv7-a -mfpu=neon -mfloat-abi=hard
-CXXFLAGS ?= -std=gnu++0x -O2 -Wall -Wextra $(ARCH)
-CPPFLAGS += -Iplatform -Icore -Icore/include
+CXXFLAGS ?= -std=gnu++0x -O2 -Wall -Wextra -fstack-protector $(ARCH)
+CPPFLAGS += -D_FORTIFY_SOURCE=2 -Iplatform -Icore -Icore/include
 HDR_ROOT ?= /opt/hdr-armhf/usr
 CPPFLAGS += -I$(HDR_ROOT)/include -I$(HDR_ROOT)/include/arm-linux-gnueabihf
 CPPFLAGS += -I$(HDR_ROOT)/include/dbus-1.0 -I$(HDR_ROOT)/lib/arm-linux-gnueabihf/dbus-1.0/include
 
 # HU libraries: sysroot paths, plus resolution of transitive dependencies at link time.
-LIBDIRS   = -L$(SYSROOT)/usr/lib -L$(SYSROOT)/lib -L$(SYSROOT)/usr/local/lib
-RPATHLINK = -Wl,-rpath-link,$(SYSROOT)/usr/lib:$(SYSROOT)/lib:$(SYSROOT)/usr/local/lib
-LDSHLIB   = -Wl,--allow-shlib-undefined $(LIBDIRS) $(RPATHLINK)
+LIBDIRS        = -L$(SYSROOT)/usr/lib -L$(SYSROOT)/lib -L$(SYSROOT)/usr/local/lib
+RPATHLINK      = -Wl,-rpath-link,$(SYSROOT)/usr/lib:$(SYSROOT)/lib:$(SYSROOT)/usr/local/lib
+HARDEN_LDFLAGS = -Wl,-z,relro,-z,now
+LDSHLIB        = -Wl,--allow-shlib-undefined $(LIBDIRS) $(RPATHLINK)
 
 PLATFORM_SRC = platform/omap_dmabuf.cpp platform/evo_ilm.cpp platform/evo_video.cpp platform/evo_process.cpp
 PLATFORM_OBJ = $(PLATFORM_SRC:.cpp=.o)
@@ -34,7 +35,8 @@ CORE_SRC = core/aa_session.cpp core/aa_channels.cpp core/aa_messages.cpp core/ca
 CORE_OBJ = $(CORE_SRC:.cpp=.o)
 # The cluster guidance (platform/kombi_*), in the service and in its tests.
 KOMBI_SRC = platform/kombi_phone.cpp platform/kombi_display.cpp platform/kombi_someip.cpp platform/kombi_graph.cpp \
-            platform/kombi_client.cpp platform/kombi_guide.cpp platform/kombi_nav.cpp platform/kombi_most.cpp
+            platform/kombi_client.cpp platform/kombi_guide.cpp platform/kombi_nav.cpp platform/kombi_most.cpp \
+            platform/kombi_most_layout.cpp
 KOMBI_OBJ = $(KOMBI_SRC:.cpp=.o)
 # Android Auto over a USB cable: the kernel's usbfs, the accessory switch, the bridge to the session, the loop.
 USB_SRC = platform/usb_devfs.cpp platform/usb_accessory.cpp platform/usb_bridge.cpp platform/usb_loop.cpp
@@ -48,8 +50,8 @@ DAEMON_SRC = platform/alps_spp.cpp platform/alps_spp_codec.cpp platform/evo_ap.c
 DAEMON_OBJ = $(CORE_OBJ) $(DAEMON_SRC:.cpp=.o)
 SUPERVISOR_OBJ = tools/aa_supervisor.o platform/evo_spp_snapshot.o platform/alps_spp.o platform/alps_spp_codec.o \
             platform/evo_ilm.o platform/evo_process.o platform/evo_ap.o platform/evo_ap_config.o platform/evo_wlan.o \
-            platform/vmost_client.o platform/usb_accessory.o platform/log_copy.o platform/update_package.o \
-            platform/update_install.o platform/update_car.o
+            platform/evo_reboot.o platform/vmost_client.o platform/usb_accessory.o platform/log_copy.o \
+            platform/update_package.o platform/update_install.o platform/update_car.o
 CHECK_OBJ = tools/evo_check.o platform/alps_spp.o platform/alps_spp_codec.o platform/evo_process.o
 CAPTURE_OBJ = tools/evo_capture.o
 ARM_OBJ = $(sort $(DAEMON_OBJ) $(PLATFORM_OBJ) $(SUPERVISOR_OBJ) $(CHECK_OBJ) $(CAPTURE_OBJ))
@@ -61,7 +63,7 @@ LIFECYCLE_OBJ = $(PLATFORM_OBJ) platform/evo_touch.o platform/evo_knob.o platfor
 VIDEO_LIBS = -l:libxsvideo.so.4 -l:libdrm_omap.so.1 -l:libdrm.so.2 -lpthread -lrt
 
 .PHONY: all daemon hmiapp dev-tools check style clean verify_core verify_binary verify_wireless verify_repo \
-        test-host-sanitizers test-frame-host test-session-host \
+        test-host-sanitizers test-unit-sanitizers test-frame-host test-session-host test-kombi-core-host \
         test-host test-parsers test-spp-host test-kombi-host test-gps-host test-capture-host test-touch-live \
         tests/evo-check-host test-arm-all test-pb-arm-build test-sdr-arm-build test-kombi-arm-build \
         test-session-silence-arm-build test-presentation-arm-build test-wireless-lifecycle-arm-build \
@@ -79,11 +81,11 @@ platform/main.o tools/aa_supervisor.o: VERSION
 
 daemon: entry-aad
 entry-aad: $(DAEMON_OBJ) $(PLATFORM_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDSHLIB) $(VIDEO_LIBS) \
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(HARDEN_LDFLAGS) $(LDSHLIB) $(VIDEO_LIBS) \
 	    -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -l:libdbus-1.so.3 -ldl
 
 aa-supervisor: $(SUPERVISOR_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDSHLIB) -l:libdbus-1.so.3 -l:libcrypto.so.1.0.0 -lpthread -lrt -ldl
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(HARDEN_LDFLAGS) $(LDSHLIB) -l:libdbus-1.so.3 -l:libcrypto.so.1.0.0 -lpthread -lrt -ldl
 
 # iDrive PluginApp (installed in /opt/hmi/data/ro/Plugins/EntryAad, loaded by HmiMain3D at boot). Its objects are
 # position independent and hidden: HmiMain3D only looks up pluginAppInfo, the one symbol the library exports.
@@ -97,7 +99,7 @@ $(sort $(HMI_OBJ) $(LIVE_DATA_OBJ)): hmiapp/%.o: hmiapp/%.cpp
 	$(CXX) $(CXXFLAGS) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -MMD -MP -c $< -o $@
 hmiapp/libEntryAad.so: $(HMI_OBJ)
 	$(CXX) $(CXXFLAGS) -fPIC -shared -Wl,-soname,libEntryAad.so $^ -o $@ \
-	    $(LDSHLIB) $(HMI_LIBDIRS) -l:libAppFramework.A.so -l:libCoreFramework.A.so -lpthread -ldl
+	    $(HARDEN_LDFLAGS) $(LDSHLIB) $(HMI_LIBDIRS) -l:libAppFramework.A.so -l:libCoreFramework.A.so -lpthread -lrt -ldl
 
 # Reference-firmware prototype only; not included in all or release packages.
 .PHONY: live-data-prototype live-data-texts
@@ -123,10 +125,10 @@ sdk-link-check: hmiapp/libEntryAad.so
 # Read-only diagnostics, run by hand on the car; neither is part of a release.
 dev-tools: evo-check evo-capture
 evo-check: $(CHECK_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDSHLIB) -l:libdbus-1.so.3 -lpthread -lrt
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(HARDEN_LDFLAGS) $(LDSHLIB) -l:libdbus-1.so.3 -lpthread -lrt
 # Passive SOME/IP recorder (tools/evo_capture.cpp: receive only, nothing sent).
 evo-capture: $(CAPTURE_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDSHLIB) -lrt
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(HARDEN_LDFLAGS) $(LDSHLIB) -lrt
 
 # Checks run on the PC. verify_binary and verify_wireless need the ARM programs and the copy of the car's system.
 verify_repo:
@@ -181,9 +183,10 @@ test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture
 	ENTRY_AAD_DIAGNOSTIC=./tests/evo-check-host ./tests/test-evo-ilm
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_video_presentation.cpp platform/evo_video.cpp -o tests/test-video-presentation
 	./tests/test-video-presentation
+	gcc -std=c99 -Wall -Wextra -Werror -shared -fPIC tests/fake_vmostclient.c -o tests/fake-vmostclient.so
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_input.cpp platform/evo_touch.cpp platform/evo_knob.cpp platform/vmost_client.cpp \
 	    -ldl -o tests/test-evo-input
-	./tests/test-evo-input
+	./tests/test-evo-input $(CURDIR)/tests/fake-vmostclient.so
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_control.cpp platform/evo_control.cpp -o tests/test-evo-control
 	./tests/test-evo-control
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_peek_timing.cpp platform/peek_timing.cpp -o tests/test-peek-timing
@@ -194,9 +197,13 @@ test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture
 	./tests/test-sdr-g20
 	$(HOST_CXX) $(HOST_FLAGS) -Icore/include tests/test_evo_sdr.cpp core/sdr_builder.cpp platform/evo_sdr_sensors.cpp -o tests/test-evo-sdr
 	./tests/test-evo-sdr
-	gcc -std=c99 -Wall -Wextra -Werror -shared -fPIC tests/fake_vmostclient.c -o tests/fake-vmostclient.so
+	gcc -std=c99 -Wall -Wextra -Werror -shared -fPIC -DFAKE_VMOST_NO_CONNECTED tests/fake_vmostclient.c \
+	    -o tests/fake-vmostclient-nosym.so
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_wlan.cpp platform/evo_wlan.cpp platform/vmost_client.cpp -ldl -o tests/test-evo-wlan
-	./tests/test-evo-wlan $(CURDIR)/tests/fake-vmostclient.so
+	./tests/test-evo-wlan $(CURDIR)/tests/fake-vmostclient.so $(CURDIR)/tests/fake-vmostclient-nosym.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_reboot.cpp platform/evo_reboot.cpp platform/vmost_client.cpp -ldl \
+	    -o tests/test-evo-reboot
+	./tests/test-evo-reboot $(CURDIR)/tests/fake-vmostclient.so
 	gcc -std=c99 -Wall -Wextra -Werror -shared -fPIC -Wl,-soname,libasound.so.2 tests/fake_libasound.c -pthread \
 	    -o tests/fake-libasound.so
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_mic.cpp platform/evo_mic.cpp -ldl -o tests/test-evo-mic
@@ -207,8 +214,17 @@ test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture
 	./tests/test-popup-peek
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_hold_machine.cpp hmiapp/hold_machine.cpp -o tests/test-hold-machine
 	./tests/test-hold-machine
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_child_reaper.cpp -o tests/test-child-reaper
+	./tests/test-child-reaper
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_vtable_check.cpp -o tests/test-vtable-check
+	./tests/test-vtable-check
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_posted_task.cpp -o tests/test-posted-task
+	./tests/test-posted-task
+	python3 tests/test_idrive_lookups.py
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_pending_restart.cpp -o tests/test-pending-restart
 	./tests/test-pending-restart
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_guard_file.cpp -o tests/test-guard-file
+	./tests/test-guard-file
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_log_profile.cpp -o tests/test-log-profile
 	./tests/test-log-profile
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_kept_log.cpp -o tests/test-kept-log
@@ -219,6 +235,7 @@ test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture
 	    -o tests/test-update-package
 	./tests/test-update-package
 	python3 tests/test_update_release.py tests/test-update-package
+	python3 tests/test_docs.py
 	$(HOST_CXX) $(HOST_FLAGS) $(HOST_SSL_FLAGS) tests/test_update_install.cpp $(UPDATE_SRC) -lcrypto \
 	    -o tests/test-update-install
 	./tests/test-update-install
@@ -232,16 +249,102 @@ test-host: test-parsers test-spp-host test-kombi-host test-gps-host test-capture
 	./tests/test-aa-messages
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_tcp_server.cpp core/tcp_server.cpp -o tests/test-tcp-server
 	./tests/test-tcp-server
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_no_inherit.cpp core/tcp_server.cpp core/car_inbox.cpp $(KOMBI_SRC) \
+	    -o tests/test-no-inherit
+	./tests/test-no-inherit
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_wifi_link.cpp platform/wifi_link.cpp -o tests/test-wifi-link
 	./tests/test-wifi-link
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_wireless_phone.cpp core/wireless_setup.cpp -o tests/test-wireless-phone
 	./tests/test-wireless-phone tests/fixtures/wireless_phone.golden
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_wireless_listen.cpp core/wireless_setup.cpp -o tests/test-wireless-listen
 	./tests/test-wireless-listen
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_crash_handler.cpp core/crash_handler.cpp -o tests/test-crash-handler
+	./tests/test-crash-handler
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_fd_hygiene.cpp platform/evo_process.cpp -o tests/test-fd-hygiene
+	./tests/test-fd-hygiene
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_security_fs.cpp -o tests/test-security-fs
+	./tests/test-security-fs
 
+# GCC's ASan can loop on DEADLYSIGNAL under a kernel that randomizes mmap over 32 bits (WSL): the sanitizer run
+# goes without address randomization where the machine allows it (Docker's seccomp refuses it: nothing changes).
+NORAND := $(shell setarch $$(uname -m) -R true 2>/dev/null && echo setarch $$(uname -m) -R)
 test-host-sanitizers:
-	ASAN_OPTIONS=detect_leaks=1 $(MAKE) test-frame-host test-session-host \
+	ASAN_OPTIONS=detect_leaks=1:allow_user_segv_handler=1 $(NORAND) $(MAKE) test-frame-host test-session-host test-parsers \
+	    test-usb-host test-capture-host test-media-host test-kombi-core-host test-unit-sanitizers \
 	    HOST_FLAGS="$(HOST_FLAGS) -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+
+test-unit-sanitizers:
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_elf.cpp -o tests/test-evo-elf
+	./tests/test-evo-elf
+	gcc -std=c99 -Wall -Wextra -Werror -shared -fPIC tests/fake_vmostclient.c -o tests/fake-vmostclient.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_input.cpp platform/evo_touch.cpp platform/evo_knob.cpp \
+	    platform/vmost_client.cpp -ldl -o tests/test-evo-input
+	./tests/test-evo-input $(CURDIR)/tests/fake-vmostclient.so
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_control.cpp platform/evo_control.cpp -o tests/test-evo-control
+	./tests/test-evo-control
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_peek_timing.cpp platform/peek_timing.cpp -o tests/test-peek-timing
+	./tests/test-peek-timing
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_volume_state.cpp -o tests/test-volume-state
+	./tests/test-volume-state
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_volume_pill.cpp -o tests/test-volume-pill
+	./tests/test-volume-pill
+	$(HOST_CXX) $(HOST_FLAGS) -Icore/include tests/test_sdr_g20.cpp core/sdr_builder.cpp platform/evo_sdr_sensors.cpp \
+	    -o tests/test-sdr-g20
+	./tests/test-sdr-g20
+	$(HOST_CXX) $(HOST_FLAGS) -Icore/include tests/test_evo_sdr.cpp core/sdr_builder.cpp platform/evo_sdr_sensors.cpp \
+	    -o tests/test-evo-sdr
+	./tests/test-evo-sdr
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_spawn_attr.cpp -o tests/test-spawn-attr
+	./tests/test-spawn-attr
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_popup_peek.cpp -o tests/test-popup-peek
+	./tests/test-popup-peek
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_hold_machine.cpp hmiapp/hold_machine.cpp -o tests/test-hold-machine
+	./tests/test-hold-machine
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_child_reaper.cpp -o tests/test-child-reaper
+	./tests/test-child-reaper
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_vtable_check.cpp -o tests/test-vtable-check
+	./tests/test-vtable-check
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_pending_restart.cpp -o tests/test-pending-restart
+	./tests/test-pending-restart
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_guard_file.cpp -o tests/test-guard-file
+	./tests/test-guard-file
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_log_profile.cpp -o tests/test-log-profile
+	./tests/test-log-profile
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_kept_log.cpp -o tests/test-kept-log
+	./tests/test-kept-log
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_log_copy.cpp platform/log_copy.cpp -o tests/test-log-copy
+	./tests/test-log-copy
+	$(HOST_CXX) $(HOST_FLAGS) $(HOST_SSL_FLAGS) tests/test_update_package.cpp platform/update_package.cpp -lcrypto \
+	    -o tests/test-update-package
+	./tests/test-update-package
+	$(HOST_CXX) $(HOST_FLAGS) $(HOST_SSL_FLAGS) tests/test_update_install.cpp $(UPDATE_SRC) -lcrypto \
+	    -o tests/test-update-install
+	./tests/test-update-install
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_update_flow.cpp -o tests/test-update-flow
+	./tests/test-update-flow
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_pb.cpp -o tests/test-pb
+	./tests/test-pb
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_aa_messages.cpp core/aa_messages.cpp -o tests/test-aa-messages
+	./tests/test-aa-messages
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_tcp_server.cpp core/tcp_server.cpp -o tests/test-tcp-server
+	./tests/test-tcp-server
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_wifi_link.cpp platform/wifi_link.cpp -o tests/test-wifi-link
+	./tests/test-wifi-link
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_wireless_phone.cpp core/wireless_setup.cpp -o tests/test-wireless-phone
+	./tests/test-wireless-phone tests/fixtures/wireless_phone.golden
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_wireless_listen.cpp core/wireless_setup.cpp -o tests/test-wireless-listen
+	./tests/test-wireless-listen
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_crash_handler.cpp core/crash_handler.cpp -o tests/test-crash-handler
+	./tests/test-crash-handler
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_fd_hygiene.cpp platform/evo_process.cpp -o tests/test-fd-hygiene
+	./tests/test-fd-hygiene
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_security_fs.cpp -o tests/test-security-fs
+	./tests/test-security-fs
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_gps.cpp -o tests/test-evo-gps
+	./tests/test-evo-gps
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_evo_reboot.cpp platform/evo_reboot.cpp platform/vmost_client.cpp -ldl \
+	    -o tests/test-evo-reboot
+	./tests/test-evo-reboot $(CURDIR)/tests/fake-vmostclient.so
 
 test-frame-host:
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_aa_frame.cpp core/aa_frame.cpp -o tests/test-aa-frame
@@ -269,7 +372,7 @@ test-media-arm-build:
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_media_recall.cpp platform/evo_knob.cpp platform/vmost_client.cpp \
 	    -o tests/test-media-recall-arm $(LDSHLIB) -lpthread -ldl -lrt
 
-test-kombi-host:
+test-kombi-core-host:
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_kombi_phone.cpp platform/kombi_phone.cpp -o tests/test-kombi-phone
 	./tests/test-kombi-phone
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_kombi_display.cpp platform/kombi_display.cpp platform/kombi_phone.cpp \
@@ -284,12 +387,14 @@ test-kombi-host:
 	./tests/test-kombi-client
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_kombi_nav.cpp $(KOMBI_SRC) -o tests/test-kombi-nav
 	./tests/test-kombi-nav
-	$(HOST_CXX) $(HOST_FLAGS) tests/test_bmw_guidance.cpp platform/evo_bmw_guidance.cpp $(HOST_DBUS) -o tests/test-bmw-guidance
-	env -u XDG_RUNTIME_DIR dbus-run-session -- ./tests/test-bmw-guidance
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_kombi_golden.cpp $(KOMBI_SRC) -o tests/test-kombi-golden
 	./tests/test-kombi-golden
 	$(HOST_CXX) $(HOST_FLAGS) tests/test_kombi_most.cpp $(KOMBI_SRC) -o tests/test-kombi-most
 	./tests/test-kombi-most
+
+test-kombi-host: test-kombi-core-host
+	$(HOST_CXX) $(HOST_FLAGS) tests/test_bmw_guidance.cpp platform/evo_bmw_guidance.cpp $(HOST_DBUS) -o tests/test-bmw-guidance
+	env -u XDG_RUNTIME_DIR dbus-run-session -- ./tests/test-bmw-guidance
 
 # The USB cable: a fake bus (a folder like /sys/bus/usb/devices) and fake phones; no real device is opened.
 test-usb-host:
@@ -322,13 +427,19 @@ test-arm-all: dev-tools test-pb-arm-build test-sdr-arm-build test-kombi-arm-buil
               test-hmiapp-arm-build test-spawn-arm-build test-lm-cli-arm-build test-phone-arm-build \
               test-usb-arm-build test-wifi-arm-build test-update-arm-build
 
+# The stand-in vMOST library (tests/fake_vmostclient.c) for the ARM tests that load it: input and evo-reboot.
+tests/fake-vmostclient-arm.so: tests/fake_vmostclient.c
+	arm-linux-gnueabihf-gcc $(ARCH) -std=c99 -Wall -Wextra -Werror -shared -fPIC $< -o $@
+
 # The update from a USB stick with the car's libcrypto (OpenSSL 1.0.1): signatures, the engine, the menu's button.
-test-update-arm-build:
+test-update-arm-build: tests/fake-vmostclient-arm.so
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_update_package.cpp platform/update_package.cpp \
 	    -o tests/test-update-package-arm $(LDSHLIB) -l:libcrypto.so.1.0.0 -ldl -lrt
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_update_install.cpp $(UPDATE_SRC) \
 	    -o tests/test-update-install-arm $(LDSHLIB) -l:libcrypto.so.1.0.0 -ldl -lrt
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_update_flow.cpp -o tests/test-update-flow-arm $(LDSHLIB)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_evo_reboot.cpp platform/evo_reboot.cpp platform/vmost_client.cpp \
+	    -o tests/test-evo-reboot-arm $(LDSHLIB) -ldl -lrt
 
 test-pb-arm-build:
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_pb.cpp -o tests/test-pb-arm $(LDSHLIB) -lrt
@@ -365,7 +476,7 @@ test-wifi-arm-build: platform/wifi_link.o
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_wifi_link.cpp platform/wifi_link.o -o tests/test-wifi-link-arm \
 	    $(LDSHLIB) -lpthread -lrt
 
-test-kombi-arm-build: $(KOMBI_OBJ)
+test-kombi-arm-build: $(KOMBI_OBJ) core/tcp_server.o core/car_inbox.o
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_phone.cpp platform/kombi_phone.o -o tests/test-kombi-phone-arm $(LDSHLIB)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_display.cpp platform/kombi_display.o platform/kombi_phone.o \
 	    -o tests/test-kombi-display-arm $(LDSHLIB)
@@ -376,6 +487,8 @@ test-kombi-arm-build: $(KOMBI_OBJ)
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_nav.cpp $(KOMBI_OBJ) -o tests/test-kombi-nav-arm $(LDSHLIB) -lpthread -lrt
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_golden.cpp $(KOMBI_OBJ) -o tests/test-kombi-golden-arm $(LDSHLIB) -lpthread -lrt
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_kombi_most.cpp $(KOMBI_OBJ) -o tests/test-kombi-most-arm $(LDSHLIB) -lpthread -lrt
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_no_inherit.cpp core/tcp_server.o core/car_inbox.o $(KOMBI_OBJ) \
+	    -o tests/test-no-inherit-arm $(LDSHLIB) -lpthread -lrt
 
 test-sdr-arm-build:
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_sdr_g20.cpp core/sdr_builder.cpp platform/evo_sdr_sensors.cpp -o tests/test-sdr-g20-arm $(LDSHLIB)
@@ -392,7 +505,7 @@ test-session-silence-arm-build: $(CORE_OBJ)
 	    $(filter-out core/wireless_setup.o,$(CORE_OBJ)) \
 	    -Wl,--gc-sections -o tests/test-session-silence-arm $(LDSHLIB) -lpthread -lrt -l:libssl.so.1.0.0 -l:libcrypto.so.1.0.0 -ldl
 
-test-presentation-arm-build:
+test-presentation-arm-build: tests/fake-vmostclient-arm.so
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_video_presentation.cpp platform/evo_video.cpp -o tests/test-video-presentation-arm $(LDSHLIB) -lpthread -lrt
 	$(CXX) $(CXXFLAGS) $(CPPFLAGS) tests/test_evo_input.cpp platform/evo_touch.cpp platform/evo_knob.cpp platform/vmost_client.cpp \
 	    -o tests/test-evo-input-arm $(LDSHLIB) -lpthread -ldl -lrt

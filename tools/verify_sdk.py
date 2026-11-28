@@ -28,7 +28,7 @@ NEEDED = {
         "libm.so.6",
     },
     "aa-supervisor": COMMON | {"libcrypto.so.1.0.0", "libdbus-1.so.3", "librt.so.1"},
-    "hmiapp/libEntryAad.so": COMMON | {"libAppFramework.A.so", "libCoreFramework.A.so"},
+    "hmiapp/libEntryAad.so": COMMON | {"libAppFramework.A.so", "libCoreFramework.A.so", "librt.so.1"},
 }
 VENDOR_LIBRARIES = {
     "entry-aad": {"libxsvideo.so.4"},

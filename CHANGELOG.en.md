@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > This is a translation of the authoritative [French changelog](CHANGELOG.md), based on
-> [`v0.13.0-rc.10`](https://github.com/Jiraiya43/EntryNav2-Android-Auto/blob/v0.13.0-rc.10/CHANGELOG.md).
+> [`v0.13.0-rc.12`](https://github.com/Jiraiya43/EntryNav2-Android-Auto/blob/v0.13.0-rc.12/CHANGELOG.md).
 > It may become outdated; consult the French changelog for the source of truth.
 
 All notable changes to this project. Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -13,15 +13,54 @@ QEMU with the car's libraries).
 
 ## [Unreleased]
 
+## [0.13.0-rc.12] - 2026-11-27 · PC
+
+Release candidate for wireless: U-APSD power saving also taken away from a phone that joined the car's Wi-Fi
+by itself, the thread that reads the phone no longer waiting for the spacing of the pictures, and a
+`[WifiLink]` line without a misleading figure, which says when the Wi-Fi chip restarts. Installs from a USB
+stick since 0.13.0-rc.10. Tested on PC and under QEMU, **not tried in a car yet**.
+
+### Fixed
+
+- Wireless: a phone already on the car's Wi-Fi when Android Auto started (a known network it joined by itself, a phone back after a lost session) kept U-APSD power saving for the whole session: the access point only rebuilt its beacon without U-APSD when nobody was connected. On an F52, that was the case of four sessions out of four ([#203](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/203)). The beacon is now rebuilt once per start of the access point, even with a device connected: it is disconnected once and joins the Wi-Fi again at once without U-APSD, just before the phone gets its start request. Another device on that Wi-Fi (a laptop, an iPhone on CarPlay) is disconnected once too. Removing U-APSD made the stutter go on an X1 F48 ([#138](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/138)); it is not the only cause of wireless lag. Tested on PC.
+- Logs: the `[WifiLink]` line wrote `0 retried` on every car, which suggested the Wi-Fi chip never had to send a frame again. Its driver does not give that number (one try per frame, "no data about retries" in its source): it is no longer written. Instead the line says when the driver restarted the chip's firmware (`chip firmware restarted`), read from the driver's state without asking the chip anything, on a thread of its own: the main loop never waits for the driver longer than 200 ms. The chip's own statistics (frames sent again, the phone's power saving) are not read: the driver asks the chip for them, and on an X1 F48 two reads 5 s apart were followed by two restarts of its firmware ([#256](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/256), [#203](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/203)). Tested on PC.
+- Wireless: pictures that arrive in pairs are still spread before going to the decoder, but the thread that reads the
+  phone no longer waits for that spacing. Its acknowledgements and its answers to the phone's pings therefore no
+  longer get up to 25 ms late per held picture during bursts of pictures. Over wireless, pictures now reach the
+  decoder from a single thread of their own, in their order and each at its time; the held picture waits in its video
+  buffer. The thread that reads the phone now waits only when the decoder's video buffers are all taken (a burst
+  longer than they are), until one is free again, as before. USB mode is unchanged. Tested on PC.
+
+## [0.13.0-rc.11] - 2026-11-26 · PC
+
+Release candidate before 1.0. It brings the complete code review (audit of 25/11), the F-series head-up display
+learned from the BMW navigation, the clean restart after an update from a USB stick, and the reports of 25-26/11:
+no more crash of the service when the car shuts down, Android Auto back after OPTION then BACK, no more street
+names or Wi-Fi address in the logs. Installs from a USB stick since 0.13.0-rc.10. Tested on PC and under QEMU,
+**not tried in a car yet**.
+
 ### Added
 
 - Polish translation of the Android Auto menu in iDrive, shown when iDrive is set to Polish (instead of English). As
   in the other languages, the texts stay ASCII, without diacritics ("laczenie" for "łączenie")
-  ([#176](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/176), tried on an F44). Tested on PC.
+  ([#176](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/176), tried on an F44; texts of the USB stick
+  update: [#185](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/185)). Tested on PC.
 - Italian translation of the Android Auto menu in iDrive ([#77](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/77)). Tested on PC.
+- After an update from a USB stick, the unit now asks the unit's processor for a clean restart, as a BMW diagnostic
+  tool does, instead of the restart that left the screen black for about 3 minutes. If it refuses, does not answer
+  or cannot be reached, the restart is the one from before. The same by hand, with the car stopped:
+  `aa-supervisor --reboot` ([maintenance](docs/MAINTENANCE.md#redémarrer-lunité-essai)). Tested on PC, not yet in a
+  car.
 
 ### Fixed
 
+- Wireless on screens wider than 1280 pixels (10.25 inches, 1440x540): the service asked the phone for a 1920x1080
+  picture, and the phone closed the session as soon as the video was set up, over the car's 2.4 GHz Wi-Fi. Over
+  wireless it now asks for 1280x720 at most: on a wider screen, the top of the picture (1280x480) is stretched to the
+  whole screen, keeping its proportions, and touches are brought back to the picture's pixels. Nothing changes over
+  the cable (1920x1080), nor on screens 1280 pixels wide or less
+  ([#190](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/190), tried wireless on an F52: picture on the whole
+  screen, touch right). Tested on PC.
 - Sound: the phone's audio focus requests are decoded as protobuf messages, even when their fields come in another
   order or their value takes several bytes ([#121](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/121)). Tested on PC.
 - Picture: a focus request from the car that came before the video was set up is now sent as soon as the video is
@@ -30,6 +69,160 @@ QEMU with the car's libraries).
 - Wireless: at start, when the car's Bluetooth stack answered "busy" (status 4) to the renewal of Android Auto's
   advertisement, the service stopped and gave Bluetooth back. It now waits for the next renewal
   ([#97](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/97), X1 F48, where the stack stays busy for about a minute at start). Tested on PC.
+- Compatibility check: a 1440x540 screen is no longer flagged with `@warn|screen|` as never tried in a car. It has
+  worked on an F52, by cable and wireless ([#190](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/190)); the warning stays for other sizes. Tested on PC.
+- FM radio: while driving, iDrive raises its radio page by itself when the tuner follows the station to another
+  frequency, and Android Auto stepped aside as after a key (X1 F48, up to about twenty times a drive). With no key
+  left to iDrive in the 6 seconds before, iDrive is now put back at once on Android Auto's blank page, at most 4
+  times in 10 s. Only for that page (screen 523, seen in the car's log): another screen iDrive opens without a key
+  still makes Android Auto step aside ([#138](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/138), after the idea of [#139](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/139)).
+  Tested on PC.
+- iDrive app: when copying the logs or checking an update went past its time limit (USB stick pulled out or
+  faulty), the app waited for the stopped program on iDrive's own thread, which could freeze for as long as the
+  kernel held that program. The programs the app starts are now collected at each status poll, never waited for;
+  the thread that waited for the supervisor is gone too. Tested on PC.
+- iDrive app: before replacing functions of its object inside iDrive (start, error, end), or calling those that read
+  the car's coding, the app checks that they are where it expects them. On another iDrive software where they moved,
+  it is not created (iDrive starts without it, its log says why), or does not read the coding (G-series keys, BMW),
+  rather than risk bringing iDrive down. Tested on PC.
+- Wireless: during an Android Auto session, a Bluetooth link that opened and turned out to be the My BMW app's (BMW
+  Apps) could be sent Android Auto's wireless start request, above all on cars where Android Auto shares the BMW
+  Apps' Bluetooth slot. That link is now left to My BMW with nothing written into it, as outside a session. Tested on
+  PC.
+- Stopping wireless Android Auto: when the car's Wi-Fi access point no longer answered, the stop could wait up to
+  15 s for its settings, and the supervisor then killed the service after 10 s, without its clean stop. No setting is
+  asked of the access point any more once the stop is asked: the stop only waits for the one under way, 5 s at most.
+  Tested on PC.
+- Wireless: a phone that opened its Bluetooth link again very fast (0.1 s after closing it, as after a lost session)
+  while the service was still closing the old one was no longer heard: its messages were dropped, and Android Auto
+  only came back at its next connection, or after a Stop/Start. The new link now opens as soon as the old one is
+  closed, with what the phone already sent. Tested on PC.
+- Compatibility check: Bluetooth was read on the BMW Apps' slot (0) only, while Android Auto takes slot 5 first. With
+  My BMW connected, the check called Bluetooth busy (`@warn|alps|`), and another app's UUID on slot 0 could block it
+  (`@block|uuid|`) with nothing to do with Android Auto. It now reads the slot a start would take, chosen the same way,
+  and names it (`@ok|alps|SPP 5`). Tested on PC.
+- iDrive app: the empty popup the app opens for a moment to bring iDrive back to Android Auto's page could stay open
+  when iDrive went back there by itself just before, and the app then took it for one of iDrive's popups: Android
+  Auto stepped aside behind an empty popup that nothing closed. It is now closed as soon as the blank page or the
+  app's menu comes back, Android Auto is brought to the screen, or a call or the camera comes up, and it is never
+  taken for an iDrive popup again. Tested on PC.
+- iDrive app: when the car's date moved back (set from the GPS) after a key, the app took that key for a very recent
+  one for as long as the date lagged behind: Android Auto stayed on screen after a key meant to make it step aside,
+  or stepped aside for the radio page iDrive raises by itself. A key dated after the current time no longer counts as
+  recent. After 24.8 days of the unit running without a restart, its millisecond clock also overflowed: BACK to the
+  app's menu no longer brought Android Auto's page back at once. Tested on PC.
+- iDrive app: the crash guard counted every iDrive start that ended within 2 minutes, however old. Three very short
+  trips, even days apart, turned the app (and its menu) off until someone stepped in over SSH. Only the starts of the
+  last 15 minutes count now, as for the automatic start, and the app comes back by itself afterwards; the files of
+  both guards can no longer be left half written by a power cut
+  ([#4](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/4)). Tested on PC.
+- USB stick update: when it ended without installing anything while Android Auto was stopping for it (a call or
+  reverse gear meanwhile, or a stop that took too long), Android Auto was to start again, but the start was asked for
+  too early, refused, and Android Auto stayed stopped without a word. It now starts again once fully stopped; Start
+  or Stop in the menu meanwhile cancels that restart, and if it has still not stopped 45 s later, the log says so.
+  Tested on PC.
+- Touch: the service recognised the touchscreen by the first packet that reached its port, whatever it was. A packet
+  from elsewhere, for example from a phone on the car's Wi-Fi, could make it ignore the touchscreen for the whole
+  session. The touchscreen is now recognised by its first touch frame, from the unit's wired network, never from the
+  Wi-Fi. Tested on PC.
+- Picture: the thread that reads the messages of the car's video decoder did not check that their queue was still
+  open. Had the decoder closed it, every read would have come back at once with nothing, and that thread would have
+  kept a processor core at 100 % until the end of the session. It now stops; without those messages no buffer comes
+  back, and the session ends as for a stalled decoder. Tested on PC.
+- Picture: a video configuration from the phone far bigger than a real one (which fits in a few tens of bytes) was
+  kept and put in front of each key frame; when both no longer fitted in the decoder's buffer, every key frame was
+  lost while it stayed. A configuration over 4 KiB is now refused, and the previous one stays. Tested on PC.
+- Cluster arrows: with no cluster on the Ethernet network (F-series, where the cluster is on MOST), every try to send
+  an arrow ended in a cancel retried for a minute, although nothing could have gone out: up to several minutes of
+  useless connection tries per session. A cancel is now tried only when something was really sent to the cluster.
+  Tested on PC.
+- Cluster and head-up arrows: a distance from the phone that was no number ("inf", "nan"), negative or absurdly
+  large went through as it was, or gave the cluster a position computed at random. Such a distance now counts as
+  missing: the cluster shows the distance worked out from the metres, else "-". A short text is shown as sent only
+  when it is made of digits ("0.3", "1,5"), and a street name that is not valid UTF-8 no longer reaches the cluster
+  as invalid characters. Tested on PC.
+- Cluster arrows: the phone's navigation messages were kept whole (up to 8 MiB each), then copied and read again
+  four times a second, by the Ethernet arrows' thread and by the MOST cluster's alike. Only their first 32 KiB are
+  now kept (a step takes a few hundred bytes), at most 16 lanes and 16 directions per lane are read, and the
+  messages are copied and read again only when a new one has come. Tested on PC.
+- USB cable: a phone that accepted the request to switch to accessory mode but never did was asked again every 5 to
+  6 seconds, for ever. After 5 requests with no result, it is now left alone until it is unplugged and plugged in
+  again, and the log says so. Tested on PC.
+- Android Auto session: messages being put together from pieces keep at most 12 MiB for all channels together (8 MiB
+  per message, as before), and a message announced larger than 8 MiB is dropped at its first piece. A device that
+  opened a message on each of the 256 channels could make the service hold more than 2 GiB and bring it down. Tested
+  on PC.
+- Android Auto session: a message too short to carry its number is dropped, instead of being taken for a picture or
+  sound and acknowledged, even on the control channel. Pictures and sound are only expected on the video and audio
+  channels the car announces to the phone; another channel can no longer change the stream number Android Auto
+  expects in the picture's acknowledgements. Tested on PC.
+- Android Auto session: the pieces of one message must be all encrypted or all in clear, otherwise the message is
+  dropped; a second version answer from the phone no longer starts the secure handshake (TLS) again in the middle of
+  a session. Once the session is secured, a message that comes in clear, other than a ping, is still handled as
+  before, but the service log notes it (once per kind of message), to learn whether real phones send any before
+  refusing them. Tested on PC.
+- Android Auto session: when the secure handshake (TLS) with the phone fails, the session ends at once, instead of
+  after 5 seconds of silence from the phone. A handshake message that comes once the session is secured is ignored,
+  instead of breaking the session at the next message; a handshake message over 64 KiB is refused. Tested on PC.
+- Android Auto session: when the phone closes the secure link (TLS), or a damaged record follows a readable message
+  in the same frame, the session ends at that frame, instead of going on until the next encrypted frame or until 5
+  seconds of silence. Tested on PC.
+- Android Auto session: a connection that has not finished the secure handshake (TLS) 10 seconds after it opened is
+  closed. A device on the car's Wi-Fi that sent an empty frame now and then without ever negotiating kept the only
+  session place, and the phone could no longer connect. The previous phone's handshake no longer counts for the next
+  connection. Tested on PC.
+- Android Auto session: the secure link (TLS) never offers compression, and a frame that would give more than 8 MiB
+  once decrypted ends the session. No phone uses the one or does the other: nothing changes for them. Tested on PC.
+- Android Auto session: before the secure negotiation (TLS) is over, only the handshake's messages may come in clear
+  (version, TLS, ping, goodbye), 64 KiB at most; any other message is refused and noted once. The TLS link no longer
+  accepts a renegotiation asked by the phone, no longer offers old ciphers, and frees its memory at the end of each
+  session. Tested on PC.
+- Android Auto session: the phone's connection is read in blocks (fewer system calls per picture), touch and the
+  controller keeping priority. Tested on PC.
+- Wireless: the phone listener no longer opens on every interface when the access point's address is unreadable,
+  and its connections no longer pass to the programs the service starts. Tested on PC.
+- Wireless: the Bluetooth exchange with the phone keeps its time limits even when the phone sends a trickle or stops
+  reading; the service's crash handler is safer. Tested on PC.
+- iDrive app: stopping Android Auto checks that a process number is really the supervisor's or the service's before
+  stopping it; the app's and the service's files no longer follow symbolic links. Tested on PC.
+- iDrive app: a service restarted between two polls gets the car's state again (reverse gear, call, parking aid), a
+  restart asked right after a launch is no longer lost, and an error in an iDrive callback no longer reaches iDrive.
+  Tested on PC.
+- Touch: a pinch cut short by an iDrive window, the reverse gear or Android Auto stopping ends properly on the phone
+  (no finger left down). Microphone, volume pill, controller and GPS made sturdier. Tested on PC.
+- Wireless: a small program started by the service (the access point setting before each connection) got a copy of
+  the phone's connection and of Android Auto's port. Had the service opened its port again meanwhile, it could not take
+  it and the phone was no longer accepted until a restart, as another project saw in a car. These connections no longer
+  pass to the programs the service starts. Tested on PC.
+- iDrive app: another project saw iDrive freeze and the head unit restart when its app read an iDrive service from a
+  posted task. Ours reads them (coding, driving mode popup setting) only as the app starts and when the driving mode
+  changes; they are now refused inside a posted task, so that a later addition cannot make that mistake. Nothing
+  changes in the car. Tested on PC.
+- Arrows on the F-series cluster over MOST: when the cluster did not answer on the known fields (the 6WA cluster's),
+  nothing was drawn ([#88](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/88), MINI F56: none of the six
+  sizes read). The service now learns the cluster's fields by listening to the BMW navigation during a route, and keeps
+  them in the `kombi-most-layout` file: one BMW route is enough, Android Auto uses them afterwards. Nothing is sent to
+  the cluster during that route, and a street name is never kept nor written to the log. The log sums up what the
+  navigation does with each field, and says once each answer from the cluster that belongs to nothing (a refused size
+  read, for instance). Tested on PC, not yet in a car.
+- Logs: the service's log no longer writes the street names of Android Auto's guidance (neither in the cluster arrow
+  lines nor in the bytes of the phone's navigation messages), only their length. This log is often posted in issues,
+  and a street tells where the driver is. Tested on PC.
+- iDrive app: after OPTION then BACK (or tilt left), Android Auto comes back by itself instead of a blank page
+  ([#137](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/137), MINI F54; the same software as the
+  BMWs). iDrive ignored the request for the app's menu while its option panel was open, and nothing brought the
+  picture back once the panel closed: it took a second BACK then *Open Android Auto*. A choice in the panel leaves
+  Android Auto aside as before; phone gone meanwhile: the app's menu. Tested on PC.
+- Arrows on the F-series cluster (MOST): once the cluster's fields are found, the service no longer tries the G-series
+  Ethernet cluster, each try of which made it wait a few seconds; and the log line of the first picture no longer
+  suggests a fault when the arrow shows ([#79](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/79)). Tested
+  on PC.
+- Logs: the Bluetooth exchange with the phone no longer writes the car's Wi-Fi name or address (BSSID) in the service's
+  log, only whether they are there: these logs get posted in issues. Tested on PC.
+- Car switch-off: the service no longer crashes when the car's vMOST service stops first (`free(): invalid pointer`,
+  seen in 0.13.0-rc.10 logs). The car's vMOST library closes its connection itself after a failed read or send, and a
+  second close crashed it: the controller, the F-series cluster arrows, the Wi-Fi hotspot request and the clean
+  restart no longer close it a second time. Tested on PC.
 
 ## [0.13.0-rc.10] - 2026-11-24 · PC
 

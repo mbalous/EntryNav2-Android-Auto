@@ -21,20 +21,27 @@ public:
 
     // A fresh engine for a new handshake; any previous one is freed first. False, and logged, when OpenSSL refuses.
     bool start();
+    // No engine, nothing established: as before the first start(). For a new connection, before its handshake.
+    void reset();
     // The ClientHello. False without an engine, or when OpenSSL wrote nothing.
     bool hello(std::vector<uint8_t>& records);
-    // The phone's handshake records in, the answer for the phone out (empty when there is none). False without an
-    // engine or without input.
+    // The phone's handshake records in, the answer for the phone out (empty when there is none; OpenSSL's alert when
+    // the handshake failed). False when they were not taken: without an engine or without input, once established,
+    // and when the handshake failed for good (broken() then tells), or would hold more than 64 KiB of the phone's
+    // bytes unread.
     bool handshake(const uint8_t* records, size_t size, std::vector<uint8_t>& answer);
     bool established() const { return established_; }
 
     // Application data, once established. False when nothing came out: for open, also while a record is cut over
-    // frames and its rest is still to come; for seal, records is then empty.
+    // frames and its rest is still to come; for seal, records is then empty. open can be true and leave TLS broken:
+    // the records before one that failed, or before the phone's close_notify, came out; check broken() either way.
     bool seal(const uint8_t* plain, size_t size, std::vector<uint8_t>& records);
     bool open(const uint8_t* records, size_t size, std::vector<uint8_t>& plain);
-    // OpenSSL failed for good (a record that failed its check, or refused by the phone's TLS): no later record can be
-    // decrypted, nothing more is sealed. Logged once. A new start() clears it.
+    // OpenSSL failed for good (a handshake that failed, a record that failed its check, or refused by the phone's
+    // TLS): no later record can be decrypted, nothing more is sealed. Logged once. A new start() clears it.
     bool broken() const { return broken_; }
+    // Frees OpenSSL's per-thread error state before a session thread exits (needed on OpenSSL 1.0.1).
+    static void cleanupThread();
 
 private:
     typedef std::unique_ptr<SSL_CTX, void (*)(SSL_CTX*)> Context;

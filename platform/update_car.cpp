@@ -3,6 +3,8 @@
 // The update from a USB stick on the car itself (update_install.hpp): /proc/mounts, the system partition remounted as
 // the installation by hand does it, the car's own loader, the restart, and the locks. What this file decides from
 // the car's answers (loaderFoundEverything, systemPartitionWritable, lockOwnFile) is in update_install.cpp, tested.
+// The restart's car side too (evo_reboot.hpp), also for aa-supervisor --reboot: the only place that runs /sbin/reboot,
+// never linked into a test.
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -13,6 +15,7 @@
 
 #include "evo_log.hpp"
 #include "evo_process.hpp"
+#include "evo_reboot.hpp"
 #include "service_contract.hpp"
 #include "update_install.hpp"
 #include "update_key.hpp"
@@ -42,6 +45,42 @@ std::string procMounts() {
     }
     return mounts;
 }
+
+// The restart on the car (evo_reboot.hpp): the vMOST session, the [Reboot] lines, the clock, today's restart.
+class CarRestartHost : public RestartHost {
+public:
+    CarRestartHost(const char* maintenanceMarker, const char* logFile) : log_(maintenanceMarker, logFile) {}
+    uint32_t nowMs() override { return monoMs(); }
+    void sleepMs(unsigned ms) override {
+        const uint32_t end = monoMs() + ms;
+        for (;;) {
+            const int32_t left = static_cast<int32_t>(end - monoMs());
+            if (left <= 0) {
+                return;
+            }
+            struct timespec req;
+            req.tv_sec = left / 1000;
+            req.tv_nsec = static_cast<long>(left % 1000) * 1000000L;
+            // SIGTERM, SIGINT and SIGHUP end this process as the unit shuts down; any other signal shortens one turn.
+            nanosleep(&req, nullptr);
+        }
+    }
+    bool sendEcuReset() override { return session_.send(); }
+    bool pump(unsigned ms, EcuResetWatch& watch) override { return session_.pump(ms, watch); }
+    void endSession() override { session_.end(); }
+    void log(const char* line) override { log_.line(line); }
+    void closeLog() override { log_.close(); }
+    // The restart as it always was: systemd stops the services first (no -f).
+    void legacyReboot() override {
+        sync();
+        execl("/sbin/reboot", "reboot", static_cast<char*>(nullptr));
+        execl("/bin/systemctl", "systemctl", "reboot", static_cast<char*>(nullptr));
+    }
+
+private:
+    EcuResetSession session_;
+    RebootLog log_;
+};
 
 class CarUpdateHost : public UpdateHost {
 public:
@@ -78,20 +117,30 @@ public:
         }
         return static_cast<long long>(fs.f_bavail) * static_cast<long long>(fs.f_frsize);
     }
-    // The unit restarts as at every power-off (systemd), a few seconds later, from a child of its own: the iDrive app
-    // reads this program's result meanwhile. The child keeps this program's locks until it runs the restart.
+    // The unit restarts a few seconds later, from a child of its own: the iDrive app reads this program's result
+    // meanwhile. The child keeps this program's locks until the restart. It asks the M4 for its clean restart, and
+    // falls back on today's /sbin/reboot (evo_reboot.hpp); its [Reboot] lines go to the service's kept log in the
+    // maintenance profile only.
     void restartUnit() override {
         const pid_t pid = fork();
         if (pid == 0) {
             setsid();
+            const int nullFd = open("/dev/null", O_RDWR);
+            if (nullFd >= 0) {
+                dup2(nullFd, STDIN_FILENO);
+                dup2(nullFd, STDOUT_FILENO);
+                dup2(nullFd, STDERR_FILENO);
+                if (nullFd > 2) {
+                    close(nullFd);
+                }
+            }
             sigset_t none;
             sigemptyset(&none);
             sigprocmask(SIG_SETMASK, &none, nullptr);
-            sleep(kRestartDelayS);
-            sync();
-            execl("/sbin/reboot", "reboot", static_cast<char*>(nullptr));
-            execl("/bin/systemctl", "systemctl", "reboot", static_cast<char*>(nullptr));
-            _exit(127);
+            signal(SIGPIPE, SIG_IGN);
+            CarRestartHost host(contract::kMaintenance, contract::kServiceLogKept);
+            restartHeadUnit(host, kRestartDelayS * 1000);
+            _exit(127);  // not even today's restart could start
         }
         if (pid < 0) {
             ELOG("Update", "cannot start the restart: restart the iDrive by hand");
@@ -150,6 +199,34 @@ int updateFromUsb(bool install, const char* installedVersion) {
     ELOG("Update", "%s: %s (report in %s)", install ? "install" : "check", updateResultText(result),
          contract::kUpdateReport);
     return static_cast<int>(result);
+}
+
+int rebootByHand() {
+    signal(SIGPIPE, SIG_IGN);
+    // The update's own lock, held until the restart: no update starts meanwhile, and none runs now (an install
+    // restarts the unit itself, a few seconds after its last file).
+    if (lockOwnFile(contract::kUpdateLock, 0) < 0) {
+        puts("aa-supervisor --reboot: an update from a USB stick runs, and restarts the unit itself. No restart.");
+        return 1;
+    }
+    struct stat st;
+    if (lstat(contract::kUpdatePending, &st) == 0) {
+        printf(
+            "aa-supervisor --reboot: an update from a USB stick was cut short (%s): run it again from the stick, it "
+            "finishes its files and restarts the unit. No restart.\n",
+            contract::kUpdatePending);
+        return 1;
+    }
+    printf(
+        "aa-supervisor --reboot: asking the unit's processor (Cortex-M4) for a clean restart, as a BMW diagnostic "
+        "tool does. Accepted: the unit shuts down by itself (the usual restart after %u s if it does not). No "
+        "answer: the usual restart (/sbin/reboot) after %u s. Refused or impossible: the usual restart now.\n",
+        kCleanRestartWaitMs / 1000, kSilentM4WaitMs / 1000);
+    fflush(stdout);
+    CarRestartHost host(nullptr, nullptr);  // the lines on this terminal
+    restartHeadUnit(host, 0);
+    puts("aa-supervisor --reboot: /sbin/reboot could not start: restart the iDrive by hand.");
+    return 127;
 }
 
 }  // namespace evo

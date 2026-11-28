@@ -33,7 +33,8 @@ const uint32_t kAaSurfaceId = 0x7eaa0001, kPillSurfaceId = 0x7eaa0002, kAaLayerI
 
 struct EvoVideoConfig {
     uint32_t width, height;                // phone stream, its canvas: 1280x720
-    uint32_t displayWidth, displayHeight;  // shown part of it, the panel: 1280x480
+    uint32_t displayWidth, displayHeight;  // the panel: 1280x480
+    uint32_t sourceWidth, sourceHeight;    // shown part of the stream: the panel's size, or less when it is stretched
     uint32_t fps;                          // 0 = not imposed
     uint32_t surfaceId;                    // kAaSurfaceId
     uint32_t layerId;                      // kAaLayerId, already visible
@@ -42,7 +43,9 @@ struct EvoVideoConfig {
     bool holdCloseFrames;                  // the phone on Wi-Fi: frames that come in pairs are spread (FrameGap)
     EvoVideoConfig();                      // the reference car's values; frames never held (USB)
     // The stream and its shown part for a panel. A 1920x1080 stream gets larger buffers for its keyframes.
-    void setDisplay(uint32_t canvasWidth, uint32_t canvasHeight, uint32_t panelWidth, uint32_t panelHeight);
+    // shownWidth x shownHeight is the part of the stream put on the panel; 0: the panel's own size (no scaling).
+    void setDisplay(uint32_t canvasWidth, uint32_t canvasHeight, uint32_t panelWidth, uint32_t panelHeight,
+                    uint32_t shownWidth = 0, uint32_t shownHeight = 0);
 };
 
 // Frames that come too close together. Over Wi-Fi, frames can arrive in pairs a few milliseconds apart: the compositor
@@ -51,6 +54,8 @@ struct EvoVideoConfig {
 // A frame that comes less than kFrameGapMs after the previous one is held for the rest of that time before it goes to
 // the decoder. The frame after a held one is never held: holds never add up, no frame waits more than kFrameGapMs,
 // and evenly spaced frames go through at once. Without holding (USB) early frames are only counted, for the log.
+// The hold runs in EvoVideo, not on the thread that reads the phone (see postVideoFrame). A frame's time is when it
+// could go to the decoder at the earliest: its arrival, or later when frames before it still wait for theirs.
 // Under EvoVideo's lock; monotonic milliseconds from the caller, compared with wrap-around.
 const uint32_t kFrameGapMs = 25;  // under the 33 ms between two frames at 30 frames/s
 
@@ -106,9 +111,10 @@ private:
 
 // What became of one frame handed to postVideoFrame.
 enum class FrameFate {
-    kDecoding,  // in the decoder
+    kDecoding,  // in the decoder, or over Wi-Fi on its way to it (the submit thread)
     kLost,      // dropped (no free buffer in time, larger than a buffer) or refused by the decoder: the frames after it
-                // refer to a picture the decoder never had
+                // refer to a picture the decoder never had. Over Wi-Fi a frame is refused after its call has
+                // returned: the next call says kLost for it.
     kNoStream,  // the decoder is not running
     kStalled,   // dropped, and the decoder gives no buffer back any more (DecoderStall): only a new one shows the
                 // phone again. Once per start().
@@ -153,13 +159,24 @@ private:
     bool starving_, reported_;
 };
 
+// The threads: the caller's (the AA session thread, which reads the phone) fills a dma-buf; over USB it hands it to the
+// decoder itself, over Wi-Fi the submit thread does, each frame at its time, so that one thread only talks to the
+// decoder there. The event thread takes the buffers back. The session thread must not wait for a hold: it acks each
+// frame after postVideoFrame and answers the phone's pings, and a burst of pairs would make all of them late by a hold
+// each. It still waits, as before, for a free buffer when the decoder has none left.
 class EvoVideo {
 public:
+    static const unsigned kMaxBuffers = 16;  // dma-bufs at most (EvoVideoConfig::bufCount)
+
     EvoVideo();
     ~EvoVideo();
 
     bool init(const EvoVideoConfig& cfg);
-    bool start();  // opens and configures libxsvideo, starts the event thread, attaches the hidden surface
+    // Opens and configures libxsvideo, starts the event thread (and the submit thread over Wi-Fi), attaches the hidden
+    // surface.
+    bool start();
+    // Joins the threads, then releases the buffers of the frames still waiting for their time (they never reach the
+    // decoder), then closes the decoder. Not while postVideoFrame runs: the session is stopped first.
     void stop();
 
     void setVisible(bool visible);
@@ -169,17 +186,35 @@ public:
     bool firstFrameSeen();                   // compositor frame callback after H.264; not a visual confirmation
 
     // SPS/PPS (the Android Auto codec config): kept and prepended to the first IDR frame after each (re)start.
+    // SPS and PPS take a few tens of bytes: a config over kMaxCodecConfig is refused, the one cached before stays.
+    // Kept, it would go in front of each IDR and leave no room for it in the buffer: every IDR would be lost.
+    static const size_t kMaxCodecConfig = 4096;
     void postCodecConfig(const uint8_t* data, size_t len);
-    // One H.264 access unit, copied into a free dma-buf and handed to the decoder. On Wi-Fi a frame that comes right
-    // after the previous one waits up to kFrameGapMs first, on the calling thread (FrameGap).
+    // One H.264 access unit, copied into a free dma-buf and handed to the decoder. Over Wi-Fi the submit thread hands
+    // it over and the call returns at once: a frame that comes right after the previous one waits up to kFrameGapMs in
+    // its buffer (FrameGap), the frames behind it wait for it so that the decoder gets them in order, the others go at
+    // once. Over USB the frame goes to the decoder on the calling thread, before the call returns. One caller at a
+    // time: the session thread.
     FrameFate postVideoFrame(const uint8_t* data, size_t len, uint64_t pts);
     // What FrameGap saw since the previous call (the periodic log line); any thread.
     FrameGapStats takeFrameGaps();
 
 private:
+    // A frame in its dma-buf, waiting for its time to go to the decoder. Its buffer stays counted as out (inFlight):
+    // the pool and DecoderStall see it taken.
+    struct Waiting {
+        int buf;             // index in pool_
+        uint32_t len;        // bytes handed to the decoder, SPS/PPS included
+        uint32_t dueMs;      // monotonic: not before
+        bool carriesConfig;  // SPS/PPS in front: refused, they go in front of the next IDR again
+    };
+
     static void* eventStub(void* self);
     void eventLoop();
-    bool isIdr(const uint8_t* data, size_t len) const;  // holds a NAL unit of type 5?
+    static void* submitStub(void* self);
+    void submitLoop();
+    bool framesWaiting() const { return waitingCount_ || submitting_; }  // under mu_
+    bool isIdr(const uint8_t* data, size_t len) const;                   // holds a NAL unit of type 5?
 
     EvoVideoConfig cfg_;
     EvoIlm ilm_;
@@ -198,6 +233,16 @@ private:
     std::vector<uint8_t> codecCfg_;  // cached SPS/PPS
     DecoderStall stall_;
     FrameGap gap_;
+    // The submit thread (Wi-Fi), started and joined by start() and stop(); its queue and the flags below under mu_.
+    pthread_t subThread_;
+    bool subStarted_;
+    bool subRunning_;               // the submit thread takes frames; false from stop() on
+    pthread_cond_t subCv_;          // a frame queued, or stop(); waits use CLOCK_MONOTONIC
+    Waiting waiting_[kMaxBuffers];  // first in, first out: the decoder gets frames in their order
+    unsigned waitingHead_, waitingCount_;
+    bool submitting_;     // the submit thread hands a frame to the decoder, outside the lock
+    uint32_t lastDueMs_;  // when the latest queued frame goes to the decoder, while frames wait
+    bool refusedLater_;   // a queued frame was refused by the decoder: the next call says kLost
     bool seenFirstFrame_;
     uint64_t framesIn_, framesDropped_, idrSeen_, framesAtStart_;
 };

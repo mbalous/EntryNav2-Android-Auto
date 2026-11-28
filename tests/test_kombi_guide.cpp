@@ -1,12 +1,18 @@
 // Copyright (c) 2026 Jiraiya43
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Tests platform/kombi_guide.cpp: what the guidance state machine sends, tick by tick, to a recorder.
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "kombi_client.hpp"
 #include "kombi_guide.hpp"
 #include "kombi_test_util.hpp"
 
@@ -427,16 +433,105 @@ void lanesInPlace() {
     CHECK(r.count() == 128 + 1 && r.out.sent.back().method == 0x000A);
 }
 
+// The cluster link of the service, counting its cancels.
+class LinkOutput : public GuideOutput {
+public:
+    LinkOutput(uint16_t port) : link("127.0.0.1", port, 500), cancels(0) {}
+    SendOutcome send(const std::vector<Request>& requests, std::string* why) override {
+        return link.send(requests, why);
+    }
+    bool cancel(std::string* why) override {
+        ++cancels;
+        return link.cancel(graph, 0.0, 0.2, nullptr, nullptr, why);
+    }
+    RouteGraph graph;
+    ClusterLink link;
+    int cancels;
+};
+
+// No KOMBI on the Ethernet (an F-series car): nothing was written, so there is nothing to cancel. Before, every try
+// ended in the cancel, retried for a minute by the service with the arrows' thread blocked.
+void noKombiNoCancel() {
+    const int closed = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t size = sizeof(a);
+    CHECK(bind(closed, reinterpret_cast<struct sockaddr*>(&a), sizeof(a)) == 0 &&
+          getsockname(closed, reinterpret_cast<struct sockaddr*>(&a), &size) == 0);  // bound, not listening
+    LinkOutput out(ntohs(a.sin_port));
+    Guide guide(out.graph, out, fullGraphs());
+    const NavInbox in = kombitest::inbox(kombitest::state(Step(7, "TEST ST")), kombitest::position(400, "0.3", 5));
+    Maneuver m;
+    CHECK(in.guiding() && in.nextManeuver(m));
+    guide.step(&m, 0);
+    CHECK(guide.stopped() == Guide::kStoppedLink && !guide.showing() && !guide.sentAny() && out.cancels == 0);
+    // Written, then the link lost: the cancel goes.
+    {
+        Rig r;
+        r.tick(0, Step(7, "TEST ST"), 800, "0.5", 5);
+        r.out.script.push_back(kLinkDown);
+        r.tick(1, Step(7, "TEST ST"), 600, "0.3", 5);
+        CHECK(r.guide.stopped() == Guide::kStoppedLink && r.out.cancels == 1);
+        // A route start that could not reach the cluster: no cancel.
+        r.guide.resumeAfterStop();
+        r.out.script.push_back(kUnreachable);
+        r.tick(2, Step(7, "TEST ST"), 500, "0.3", 5);
+        CHECK(r.guide.stopped() == Guide::kStoppedLink && r.out.cancels == 1 && !r.guide.sentAny());
+    }
+    close(closed);
+}
+
 }  // namespace
+
+// What the guide logs while run() goes (ELOG writes to stdout), caught in a file.
+std::string logOf(void (*run)()) {
+    char path[] = "/tmp/kombi-guide-log-XXXXXX";
+    const int file = mkstemp(path);
+    CHECK(file >= 0);
+    fflush(stdout);
+    const int saved = dup(1);
+    dup2(file, 1);
+    run();
+    fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    std::string text;
+    char buf[4096];
+    ssize_t n;
+    lseek(file, 0, SEEK_SET);
+    while ((n = read(file, buf, sizeof(buf))) > 0) {
+        text.append(buf, static_cast<size_t>(n));
+    }
+    close(file);
+    unlink(path);
+    return text;
+}
+
+// The roads a driver passes say where he is, and users post the log: only a road's length is written there.
+void noRoadInLog() {
+    const std::string text = logOf([]() {
+        Rig r;
+        r.tick(0, Step(7, "Rue des Secrets"), 800, "0.5", 5);
+        CHECK(r.count() == 97);
+    });
+    CHECK(text.find("SHOW") != std::string::npos && text.find("road of 15 byte(s)") != std::string::npos);
+    CHECK(text.find("Secrets") == std::string::npos);
+}
 
 int main() {
     demoDriveInPlace();
     gapsAndRefusals();
+    noKombiNoCancel();
     distancesAndNames();
     graceAndYield();
     approach();
     lanesWithGraphs();
     lanesInPlace();
-    puts("PASS kombi guide: in place and whole graphs, distances, lanes and positions, grace, approach, refusals");
+    noRoadInLog();
+    puts(
+        "PASS kombi guide: in place and whole graphs, distances, lanes and positions, grace, approach, refusals, "
+        "no road name in the log");
     return 0;
 }

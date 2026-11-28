@@ -7,11 +7,13 @@
 // away. Any other outcome shows on the button for kUpdateResultS, then it reads "Update from USB stick" again.
 // While Android Auto is being stopped for the install, while the install runs and until the unit restarts, no start
 // of Android Auto is allowed. If Android Auto was stopped for an install that then changed nothing, it is started
-// again. Pure: tests/test_update_flow.cpp.
+// again once nothing of it is left (pending_restart.hpp, as for the USB checkbox): asked for while its supervisor still
+// gave the Bluetooth back, the start was refused and Android Auto stayed stopped. Pure: tests/test_update_flow.cpp.
 #ifndef ENTRY_AAD_HMIAPP_UPDATE_FLOW_HPP
 #define ENTRY_AAD_HMIAPP_UPDATE_FLOW_HPP
 
 #include "../platform/update_install.hpp"
+#include "pending_restart.hpp"
 #include "rhmi_ids.hpp"
 
 namespace evo {
@@ -31,7 +33,8 @@ public:
         bool mayRestart;   // no phone call and not in reverse gear: the unit may restart
     };
 
-    UpdateFlow() : state_(kIdle), text_(kTextUpdate), since_(0), stoppedAndroidAuto_(false), restart_(false) {}
+    UpdateFlow()
+        : state_(kIdle), text_(kTextUpdate), since_(0), stoppedAndroidAuto_(false), turn_(PendingRestart::kNothing) {}
 
     // The button.
     Step press(long now, const Car& car) {
@@ -45,6 +48,7 @@ public:
                     set(kShowing, kTextUpdateNotNow, now);
                     return kNothing;
                 }
+                cancelRestart();  // an earlier one: the install needs Android Auto stopped
                 if (car.androidAuto) {
                     set(kStopping, kTextUpdateStopping, now);
                     stoppedAndroidAuto_ = true;
@@ -59,6 +63,7 @@ public:
 
     // Once per status poll.
     Step poll(long now, const Car& car) {
+        Step step = kNothing;
         if (state_ == kReady && now - since_ >= kUpdateReadyS) {
             set(kIdle, kTextUpdate, now);
         } else if (state_ == kShowing && now - since_ >= kUpdateResultS) {
@@ -67,13 +72,18 @@ public:
             giveUp(kTextUpdateNotNow, now);  // a call or reverse gear came while Android Auto stopped
         } else if (state_ == kStopping && !car.androidAuto) {
             set(kInstalling, kTextUpdateInstalling, now);
-            return kStartInstall;
+            step = kStartInstall;
         } else if (state_ == kStopping && now - since_ >= kUpdateStopS) {
             giveUp(kTextUpdateBusy, now);
         } else if (state_ == kRestarting && text_ == kTextUpdateRestarting && now - since_ >= kUpdateRestartS) {
             text_ = kTextUpdateRestartByHand;  // stays: the app on screen is the old one
         }
-        return kNothing;
+        // After the state: a give up of this same poll that found Android Auto gone already is started at once.
+        const PendingRestart::Turn turn = restart_.turn(now, car.androidAuto);
+        if (turn != PendingRestart::kNothing) {
+            turn_ = turn;
+        }
+        return step;
     }
 
     // The check or the install has ended: its exit code (UpdateResult), or -2 when it ended otherwise (killed,
@@ -95,13 +105,22 @@ public:
     unsigned text() const { return text_; }
     bool checking() const { return state_ == kChecking; }
     bool installing() const { return state_ == kInstalling; }
+    // True only when poll() needs to know whether Android Auto / the supervisor is still alive.
+    bool needsAndroidAutoState() const { return state_ == kStopping || restart_.asked(); }
+    bool restartAsked() const { return restart_.asked(); }
     // Android Auto must not start: it is being stopped for the install, the install runs, or the unit restarts.
     bool holdsAndroidAuto() const { return state_ == kStopping || state_ == kInstalling || state_ == kRestarting; }
-    // Once: Android Auto was stopped for an install that then changed nothing; start it again.
-    bool takeRestart() {
-        const bool restart = restart_;
-        restart_ = false;
-        return restart;
+    // Once each, from a poll: Android Auto was stopped for an install that then changed nothing, and nothing of it is
+    // left now: start it again (kStart); or it was still there kRestartGiveUpS later: left as it is (kGiveUp).
+    PendingRestart::Turn takeRestart() {
+        const PendingRestart::Turn turn = turn_;
+        turn_ = PendingRestart::kNothing;
+        return turn;
+    }
+    // A start or a stop by hand: the driver decides again.
+    void cancelRestart() {
+        restart_.cancel();
+        turn_ = PendingRestart::kNothing;
     }
 
 private:
@@ -113,10 +132,13 @@ private:
         since_ = now;
     }
 
-    // Nothing was installed: the outcome shows, and Android Auto comes back if it was stopped for this.
+    // Nothing was installed: the outcome shows, and Android Auto comes back if it was stopped for this, once it has
+    // stopped.
     void giveUp(unsigned text, long now) {
         set(kShowing, text, now);
-        restart_ = stoppedAndroidAuto_;
+        if (stoppedAndroidAuto_) {
+            restart_.ask(now);
+        }
         stoppedAndroidAuto_ = false;
     }
 
@@ -176,7 +198,8 @@ private:
     unsigned text_;
     long since_;
     bool stoppedAndroidAuto_;  // this flow stopped Android Auto for its install
-    bool restart_;
+    PendingRestart restart_;   // and gave up before changing anything: started again once it has stopped
+    PendingRestart::Turn turn_;
 };
 
 }  // namespace app

@@ -499,8 +499,8 @@ int Updater::programsLoad() {
         return -1;
     }
     struct stat st;
-    if (lstat(staging.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
-        note(staging + " is not a folder");
+    if (lstat(staging.c_str(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 077) != 0) {
+        note(staging + " is not a private folder owned by this user");
         return -1;
     }
     listFolder(staging, stale);
@@ -831,7 +831,8 @@ void Updater::writeReports() {
     if (stick.empty()) {
         return;
     }
-    const int fd = open((stick + "/" + kUpdateStickReport).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    const int fd =
+        open((stick + "/" + kUpdateStickReport).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd >= 0) {
         if (writeAll(fd, report_.data(), report_.size())) {
             fsync(fd);

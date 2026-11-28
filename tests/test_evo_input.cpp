@@ -1,10 +1,19 @@
 // Copyright (c) 2026 Jiraiya43
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Inputs: IPv4/UDP tap parsing, touch state machine, vMOST messages to the controller decoder, keys and volume.
+// With the stand-in vMOST library (tests/fake_vmostclient.c) as argument: the controller reader when vmostd leaves.
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <string>
 
 #include "evo_knob.hpp"
 #include "evo_touch.hpp"
@@ -45,6 +54,15 @@ static size_t ipUdp(uint8_t* p, const uint8_t* payload, size_t n, uint16_t sport
     return total;
 }
 
+// The datagram comes from a phone on the car's Wi-Fi (192.168.1.20) instead of the touch controller.
+static size_t fromPhone(uint8_t* p, size_t n) {
+    p[12] = 192;
+    p[13] = 168;
+    p[14] = 1;
+    p[15] = 20;
+    return n;
+}
+
 static size_t touchDatagram(const unsigned char* frame, size_t first, size_t records, unsigned char* out) {
     namespace pdu = aa::touchpdu;
     const size_t bytes = pdu::kRecord * records;
@@ -67,7 +85,175 @@ static int frame(evo::TouchTracker& t, int x, int y, int state, unsigned char se
     return t.feed(f, sizeof(f), ev, 16);
 }
 
-int main() {
+// ---- the controller reader when vmostd leaves, on the stand-in library ----
+
+static std::string readText(const std::string& path) {
+    std::string s;
+    FILE* f = fopen(path.c_str(), "r");
+    if (!f) {
+        return s;
+    }
+    char b[512];
+    size_t n;
+    while ((n = fread(b, 1, sizeof(b), f)) > 0) {
+        s.append(b, n);
+    }
+    fclose(f);
+    return s;
+}
+
+static size_t countOf(const std::string& s, const char* part) {
+    size_t n = 0;
+    for (size_t at = s.find(part); at != std::string::npos; at = s.find(part, at + 1)) {
+        ++n;
+    }
+    return n;
+}
+
+// What the F-series cluster's guidance fields do on the reader's connection (kombi_most.cpp): three copies asked in a
+// row at its first tick (MostHud::shadowAll), given back at the end (MostHud::unshadow).
+class CopyingPeer : public evo::VmostPeer {
+public:
+    CopyingPeer() : ticks_(0) {}
+    bool wants(const evo::VmostMsgView&) const override { return false; }
+    void onMessage(const evo::VmostMsgView&) override {}
+    int dueInMs(uint32_t) const override { return 20; }
+    void tick(uint32_t, evo::VmostPort& port) override {
+        if (ticks_++ == 0) {
+            port.shadow(0x02, 0x00, true);
+            port.shadow(0x82, 0x00, true);
+            port.shadow(0x52, 0x00, true);
+        }
+    }
+    void finish(evo::VmostPort& port) override {
+        port.shadow(0x52, 0x00, false);
+        port.shadow(0x82, 0x00, false);
+        port.shadow(0x02, 0x00, false);
+    }
+
+private:
+    unsigned ticks_;
+};
+
+static void ignoreKey(const aa::CcsEvent&, void*) {}
+
+struct LinkCase {
+    const char* name;
+    const char* how;    // how vmostd leaves (FAKE_VMOST_GONE_HOW)
+    bool peer;          // with the cluster's fields on the connection
+    const char* until;  // the stand-in library's line the child waits for, then stops the reader
+    const char* shows;  // what the stand-in library's log must show
+};
+
+// One reader in a child process: vmostd leaves after the reader's first eight messages, its reads at the start (E5.03
+// C46/C47/C4F, the console's volume and its button, the wheel's volume and its phone button, the volume level). The
+// child stops the reader once `until` is logged: stop() joins its thread, so whatever it did after is done. Returns
+// the child's wait status: the stand-in library aborts, as glibc on the car, on a second disconnection.
+static int runReader(const LinkCase& c, const char* lib, const std::string& sock, const std::string& log,
+                     const std::string& out) {
+    unlink(log.c_str());
+    fflush(stdout);
+    fflush(stderr);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        const int fd = open(out.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        setenv("FAKE_VMOST_LOG", log.c_str(), 1);
+        setenv("FAKE_VMOST_GONE_AFTER", "8", 1);
+        setenv("FAKE_VMOST_GONE_HOW", c.how, 1);
+        evo::setVmostForTest(sock.c_str(), lib);
+        CopyingPeer peer;
+        int code = 0;
+        {
+            evo::EvoKnob knob;
+            if (c.peer) {
+                knob.setPeer(&peer);
+            }
+            if (!knob.start(evo::INPUT_OBSERVE, &ignoreKey, nullptr)) {
+                code = 3;
+            } else {
+                // 10 s at most: the older protocol's reads go 2 s after the start.
+                for (int i = 0; i < 1000 && readText(log).find(c.until) == std::string::npos; ++i) {
+                    usleep(10000);
+                }
+                code = readText(log).find(c.until) == std::string::npos ? 4 : 0;
+                knob.stop();
+            }
+        }
+        fflush(stdout);
+        _exit(code);
+    }
+    int status = -1;
+    while (pid > 0 && waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    return status;
+}
+
+static void vmostLinkLost(const char* lib) {
+    char dir[] = "/tmp/entry-knob-test-XXXXXX";
+    CHECK(mkdtemp(dir));
+    const std::string sock = std::string(dir) + "/vmost_sockstream", log = std::string(dir) + "/vmost.log",
+                      out = std::string(dir) + "/reader.out";
+    const int s = socket(AF_UNIX, SOCK_STREAM, 0);  // vmostd's socket, so that the reader loads the library
+    CHECK(s >= 0);
+    sockaddr_un a;
+    memset(&a, 0, sizeof(a));
+    a.sun_family = AF_UNIX;
+    strncpy(a.sun_path, sock.c_str(), sizeof(a.sun_path) - 1);
+    CHECK(bind(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
+
+    // Each time the connection is let go exactly once, and nothing is deregistered once vmostd has left.
+    const LinkCase cases[] = {
+        // Hung up: the library still holds its side, the reader lets it go.
+        {"vmostd hangs up", "hangup", false, "disconnect\n", "vmostd leaves (hangup)\ndisconnect\n"},
+        // A broken read: the library disconnects itself ("vMOST reading interrupted"); the reader must not again.
+        {"the read breaks", "broken", false, "disconnects itself",
+         "vmostd leaves (broken)\nthe library disconnects itself (a read failed)\ndisconnect\n"},
+        // A write that fails before the descriptor says anything: the older controller's read, 2 s after the start.
+        {"the older protocol's read is not written", "deaf", false, "disconnects itself",
+         "send addr=ffff e5.01.c10 op=1 len=0 :\nthe library disconnects itself (a write failed)\ndisconnect\n"},
+        // The cluster's fields ask their copies on the reader's connection (F series): the first one fails.
+        {"the cluster's copies are not asked", "deaf", true, "disconnects itself",
+         "register 02.00\nthe library disconnects itself (a registration failed)\ndisconnect\n"},
+    };
+    int failed = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const LinkCase& c = cases[i];
+        const int status = runReader(c, lib, sock, log, out);
+        const std::string l = readText(log);
+        const size_t left = l.find("vmostd leaves");
+        const bool ok = WIFEXITED(status) && WEXITSTATUS(status) == 0 && left != std::string::npos &&
+                        countOf(l.substr(0, left), "send ") == 8 && l.find(c.shows) != std::string::npos &&
+                        countOf(l, "disconnect\n") == 1 && countOf(l.substr(left), "deregister") == 0 &&
+                        countOf(l.substr(left), "register 82.00") == 0;
+        if (!ok) {
+            char why[64];
+            if (WIFSIGNALED(status)) {
+                snprintf(why, sizeof(why), "the reader died (signal %d)", WTERMSIG(status));
+            } else {
+                snprintf(why, sizeof(why), "exit %d", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+            }
+            fprintf(stderr, "FAIL controller reader, %s: %s\n--- stand-in library ---\n%s--- reader ---\n%s", c.name,
+                    why, l.c_str(), readText(out).c_str());
+            ++failed;
+        }
+    }
+    CHECK(failed == 0);
+    close(s);
+    unlink(sock.c_str());
+    unlink(log.c_str());
+    unlink(out.c_str());
+    rmdir(dir);
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1) {
+        vmostLinkLost(argv[1]);
+    }
     evo::InputMode mode;
     CHECK(evo::parseInputMode(nullptr, mode) && mode == evo::INPUT_OFF);
     CHECK(evo::parseInputMode("off", mode) && mode == evo::INPUT_OFF);
@@ -103,6 +289,38 @@ int main() {
     CHECK(!evo::parseIpv4Udp(pkt, n, u));
     pkt[0] = 0x45;
     CHECK(evo::parseIpv4Udp(pkt, n, u));
+
+    // The touchscreen is the sender of the first touch frame on a wired interface; nothing else fixes it.
+    {
+        typedef evo::TouchSource S;
+        const int kVbr = 7, kTwin = 3, kWlan = 5;
+        uint8_t other[8] = {0x12, 0x34, 0x56, 0x78, 1, 2, 3, 4};
+        uint8_t wifiPkt[256], wifiTouchPkt[256], otherPkt[256], touchPkt[256], twinPkt[256];
+        evo::UdpView wifiOther, wifiTouch, otherPdu, touch, twin;
+        // From a phone on the car's Wi-Fi: first a datagram that is no touch frame, then a touch frame.
+        CHECK(evo::parseIpv4Udp(wifiPkt, fromPhone(wifiPkt, ipUdp(wifiPkt, other, sizeof(other), 40000, 30567)),
+                                wifiOther));
+        CHECK(evo::parseIpv4Udp(
+            wifiTouchPkt, fromPhone(wifiTouchPkt, ipUdp(wifiTouchPkt, pdu, sizeof(pdu), 40000, 30567)), wifiTouch));
+        CHECK(evo::parseIpv4Udp(otherPkt, ipUdp(otherPkt, other, sizeof(other), 30501, 30567), otherPdu));
+        CHECK(evo::parseIpv4Udp(touchPkt, ipUdp(touchPkt, pdu, sizeof(pdu), 30501, 30567), touch));
+        CHECK(evo::parseIpv4Udp(twinPkt, ipUdp(twinPkt, pdu, sizeof(pdu), 30502, 30567), twin));
+        S source;
+        CHECK(source.judge(kWlan, false, wifiOther) == S::kOther && !source.known());
+        CHECK(source.judge(kWlan, false, wifiTouch) == S::kUntrusted && !source.known());
+        CHECK(source.judge(kTwin, true, otherPdu) == S::kOther && !source.known());  // another PDU, on a twin
+        CHECK(source.judge(0, true, touch) == S::kUntrusted && !source.known());     // no interface
+        // The touchscreen's first frame: its interface and sender from now on.
+        CHECK(source.judge(kVbr, true, touch) == S::kTouch && source.known() && source.ifindex() == kVbr);
+        CHECK(source.ip() == ((160u << 24) | (48u << 16) | (199u << 8) | 115u) && source.port() == 30501);
+        CHECK(source.judge(kVbr, true, touch) == S::kTouch);
+        CHECK(source.judge(kTwin, true, touch) == S::kTwin && source.judge(kWlan, false, wifiTouch) == S::kTwin);
+        CHECK(source.judge(kVbr, true, twin) == S::kOtherSender && source.judge(kVbr, true, otherPdu) == S::kOther);
+        CHECK(source.ifindex() == kVbr && source.port() == 30501);
+        CHECK(evo::isWifiInterface("wlan0") && evo::isWifiInterface("wlan1") && evo::isWifiInterface("p2p-wlan0-0"));
+        CHECK(!evo::isWifiInterface("vbr0.73") && !evo::isWifiInterface("eth0") && !evo::isWifiInterface("lo"));
+        CHECK(!evo::isWifiInterface(nullptr));
+    }
 
     // Touch state machine: one tap = PRESS, DRAG, RELEASE; a duplicate is never a second tap.
     evo::TouchTracker t;
@@ -145,6 +363,14 @@ int main() {
     CHECK(frame(mini, 20, 210, 2, 12, ev) == 1 && ev[0].p[0].x == 0);  // under the surround: the edge
     CHECK(frame(mini, 1270, 479, 2, 24, ev) == 1 && ev[0].p[0].x == 1199 && ev[0].p[0].y == 479);
     CHECK(frame(mini, 1270, 479, 3, 36, ev) == 1 && ev[0].action == 1 && mini.activeCount() == 0);
+    // A 1440x540 panel showing a 1280x480 picture stretched to it (wireless, #180): a finger is sent in the picture's
+    // pixels, the panel's last pixel is the picture's last one.
+    evo::TouchTracker stretched;
+    stretched.setScale(1280.0 / 1440.0, 1280.0 / 1440.0);
+    stretched.setLimits(1279, 479);
+    CHECK(frame(stretched, 720, 270, 1, 0, ev) == 1 && ev[0].action == 0 && ev[0].p[0].x == 640 && ev[0].p[0].y == 240);
+    CHECK(frame(stretched, 1439, 539, 2, 12, ev) == 1 && ev[0].p[0].x == 1279 && ev[0].p[0].y == 479);
+    CHECK(frame(stretched, 1439, 539, 3, 24, ev) == 1 && ev[0].action == 1 && stretched.activeCount() == 0);
     // Before the picture: a finger that touches down is ignored until it lifts, even once the picture is up.
     evo::TouchTracker early;
     early.setPictureStarted(false);
@@ -181,6 +407,25 @@ int main() {
         two[0].state = 3;  // then the first one
         touch_fixture::buildTouchFrame(f2, two, 1, 108);
         CHECK(tr.feed(f2, sizeof(f2), ev, 16) == 1 && ev[0].action == 1 && phone.admit(ev[0], false) && !phone.any());
+    }
+    // The picture leaves (a popup, the reverse camera) during a pinch: the phone saw the first finger go down, the
+    // second came in the last instant, and the touch thread's next turn releases both. Both lifts go to the phone,
+    // the last one a RELEASE that ends the gesture; sorted finger by finger, the phone would get only a POINTER_UP and
+    // keep a pointer down.
+    {
+        evo::TouchTracker tr;
+        evo::PhoneFingers phone;
+        CHECK(frame(tr, 200, 100, 1, 0, ev) == 1 && phone.admit(ev[0], true));
+        aa::TouchContact two[2] = {{0, 2, 200, 100, 9}, {1, 1, 600, 300, 9}};
+        unsigned char f2[touch_fixture::kFrameBytes];
+        touch_fixture::buildTouchFrame(f2, two, 2, 12);
+        CHECK(tr.feed(f2, sizeof(f2), ev, 16) == 1 && !phone.admit(ev[0], false));  // the picture has just left
+        const int n = tr.releaseAll(ev, 16);
+        CHECK(n == 2 && ev[0].action == 6 && ev[1].action == 1);
+        CHECK(evo::phoneLifts(phone, n) == 2 && !phone.any());
+        // The phone saw no finger at all: no lift for it.
+        CHECK(frame(tr, 300, 100, 1, 24, ev) == 1 && !phone.admit(ev[0], false));
+        CHECK(tr.releaseAll(ev, 16) == 1 && evo::phoneLifts(phone, 1) == 0);
     }
     // The same message split over three datagrams.
     evo::TouchTracker s;
@@ -818,6 +1063,8 @@ int main() {
         "touches comme CarPlay (effleurement ignore, NAV/MEDIA/COM et bouton telephone du volant -> applis AA, COM a "
         "l iDrive pendant un appel, sauf le relache d'un COM appuye avant) ; touches selon le codage de la voiture, "
         "comme l iDrive (controleur G ou F, F20 ZBE3 #55, double MEDIA) ; boutons de volume console/volant decodes ; "
-        "niveau du volume (20.00.C08)");
+        "niveau du volume (20.00.C08) ; lecteur de la molette quand vmostd part (raccroche, lecture cassee, envoi "
+        "rate, "
+        "copies du compteur) : connexion lachee une seule fois, rien desenregistre");
     return 0;
 }

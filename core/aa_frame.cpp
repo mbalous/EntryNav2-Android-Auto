@@ -50,16 +50,20 @@ MessageAssembler::Outcome MessageAssembler::add(const FrameHeader& header, const
         return kComplete;
     }
     if (position == frame::kFirst) {
-        // Replaces an unfinished message, or ends the tail of a lost one whose LAST never came.
-        if (payload.size() > frame::kMaxMessage) {
+        // Replaces an unfinished message, or ends the tail of a lost one whose LAST never came: freed before this one
+        // is weighed. One announced larger than a message may be is dropped before any of it is kept.
+        release(header.channel);
+        if (header.totalSize > frame::kMaxMessage || header.totalSize > maxPending_ || !fits(payload.size(), 0)) {
             forget(header.channel, position);
             return kOverflow;
         }
         Pending& pending = pending_[header.channel];
-        pending.data = payload;
+        pending.data.assign(payload.begin(), payload.end());
         pending.lostTail = false;
+        pending.encrypted = header.encrypted();
         pending.size = header.totalSize;
         pending.onWire = header.length;
+        held_ += payload.size();
         return kPending;
     }
     const std::map<uint8_t, Pending>::iterator it = pending_.find(header.channel);
@@ -74,25 +78,32 @@ MessageAssembler::Outcome MessageAssembler::add(const FrameHeader& header, const
         }
         return kRestOfLost;
     }
-    if (payload.size() > frame::kMaxMessage - pending.data.size()) {
+    if (!fits(payload.size(), pending.data.size())) {
         forget(header.channel, position);
         return kOverflow;
+    }
+    // A phone encrypts all of a message or none of it: a fragment that differs from its FIRST is not part of it.
+    if (header.encrypted() != pending.encrypted) {
+        forget(header.channel, position);
+        return kMixed;
     }
     if (position == frame::kMiddle) {
         pending.data.insert(pending.data.end(), payload.begin(), payload.end());
         pending.onWire += header.length;
+        held_ += payload.size();
         return kPending;
     }
-    // LAST closes the message started by FIRST.
-    const uint32_t onWire = pending.onWire + header.length;
+    // LAST closes the message started by FIRST, which then leaves the pending ones.
+    const uint64_t onWire = pending.onWire + header.length;
     const uint32_t size = pending.size;
+    held_ -= pending.data.size();
     pending.data.insert(pending.data.end(), payload.begin(), payload.end());
     message.swap(pending.data);
     pending_.erase(it);
     // The announced size counts plain bytes and the length fields count TLS records, which are larger: only a
     // shortfall tells that this LAST closed an incomplete message.
     if (size != 0 && onWire < size) {
-        received_ = onWire;
+        received_ = static_cast<uint32_t>(onWire);
         announced_ = size;
         return kShortOfSize;
     }
@@ -105,9 +116,24 @@ void MessageAssembler::lose(const FrameHeader& header) {
     }
 }
 
-// Erased first, so that what was gathered is freed; a LAST leaves nothing of its message to skip.
+// The bound of the message itself, and that of all channels together. Both hold the bytes kept so far (held_ may
+// exceed maxPending_ only if tightened later), so the subtractions cannot wrap.
+bool MessageAssembler::fits(size_t more, size_t holding) const {
+    return holding <= frame::kMaxMessage && more <= frame::kMaxMessage - holding && held_ <= maxPending_ &&
+           more <= maxPending_ - held_;
+}
+
+void MessageAssembler::release(uint8_t channel) {
+    const std::map<uint8_t, Pending>::iterator it = pending_.find(channel);
+    if (it != pending_.end()) {
+        held_ -= it->second.data.size();
+        pending_.erase(it);
+    }
+}
+
+// Released first, so that what was gathered is freed; a LAST leaves nothing of its message to skip.
 void MessageAssembler::forget(uint8_t channel, uint8_t position) {
-    pending_.erase(channel);
+    release(channel);
     if (position != frame::kLast) {
         pending_[channel].lostTail = true;
     }

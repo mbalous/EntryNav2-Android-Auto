@@ -163,6 +163,38 @@ void hostileMessages() {
     aa::pb::appendMessage(s, 1, step);
     CHECK(kombitest::inbox(s).nextManeuver(m) && m.type == 0);
 
+    // Metres below 0 or past 100 000 km are no distance, from either message (a varint read as int64 can be < 0).
+    const int64_t metres[] = {-1, evo::kombi::kFarthestMetres + 1, static_cast<int64_t>(0x8000000000000000ULL)};
+    for (size_t i = 0; i < sizeof(metres) / sizeof(metres[0]); ++i) {
+        Bytes distance, step, position;
+        aa::pb::appendUint(distance, 1, static_cast<uint64_t>(metres[i]));
+        aa::pb::appendString(distance, 2, "0.3");
+        aa::pb::appendUint(distance, 3, 5);
+        aa::pb::appendMessage(step, 1, distance);
+        aa::pb::appendMessage(position, 1, step);
+        m = next(kombitest::inbox(kombitest::state(Step(7, "R")), position));
+        CHECK(!m.hasMetres && m.distanceText == "0.3");
+        NavInbox older = kombitest::inbox(Bytes());
+        Bytes turn, event;
+        aa::pb::appendUint(turn, 3, 4);
+        kombitest::put(older, evo::kombi::kNavTurn, turn);
+        aa::pb::appendUint(event, 1, static_cast<uint64_t>(metres[i]));
+        kombitest::put(older, evo::kombi::kNavTurnDistance, event);
+        CHECK(older.nextManeuver(m) && !m.hasMetres);
+    }
+    m = next(
+        kombitest::inbox(kombitest::state(Step(7, "R")), kombitest::position(evo::kombi::kFarthestMetres, "60000", 2)));
+    CHECK(m.hasMetres && m.metres == evo::kombi::kFarthestMetres);
+
+    // Not UTF-8 (past U+10FFFF, a surrogate, an overlong form): never a string, so never a road name.
+    const char* const notUtf8[] = {"\xf4\x90\x80\x80", "\xed\xa0\x80", "\xc0\x80", "\xe0\x80\x80"};
+    for (size_t i = 0; i < sizeof(notUtf8) / sizeof(notUtf8[0]); ++i) {
+        m = next(kombitest::inbox(kombitest::state(Step(7, std::string("A") + notUtf8[i]))));
+        CHECK(m.type == 7 && m.road.empty());
+    }
+    m = next(kombitest::inbox(kombitest::state(Step(7, "A\xf4\x8f\xbf\xbf\xc2\x80\xe0\xa0\x80\xed\x9f\xbf"))));
+    CHECK(m.road == "A\xf4\x8f\xbf\xbf\xc2\x80\xe0\xa0\x80\xed\x9f\xbf");  // the edges that are UTF-8
+
     // Field numbers above 2^29 - 1 are not protobuf: the message stops there.
     NavInbox big;
     kombitest::put(big, evo::kombi::kNavStatus, Bytes{0x80, 0x80, 0x80, 0x80, 0x10, 0x00, 0x08, 0x01});
@@ -191,6 +223,67 @@ void hostileMessages() {
     }
 }
 
+// What the service keeps of the phone's messages, and how far it reads them: bounded, whatever the phone sends.
+void boundedInbox() {
+    Maneuver m;
+    // A message is kept up to its first 32 KiB, what the fields read are in (each one's first occurrence): the next
+    // step of a long route is still read, a status past 32 KiB of padding no longer is.
+    {
+        Bytes longRoute = kombitest::state(Step(7, "FIRST ST"));
+        Bytes padding;
+        aa::pb::appendString(padding, 1, std::string(1000, 'X'));
+        for (int i = 0; i < 1000; ++i) {  // about a megabyte of later steps
+            aa::pb::appendMessage(longRoute, 1, padding);
+        }
+        m = next(kombitest::inbox(longRoute));
+        CHECK(m.type == 7 && m.road == "FIRST ST");
+        Bytes late;
+        aa::pb::appendString(late, 2, std::string(evo::kombi::kMaxNavBody, 'P'));
+        aa::pb::appendUint(late, 1, 1);
+        NavInbox in;
+        kombitest::put(in, evo::kombi::kNavStatus, late);
+        CHECK(!in.guiding());
+        Bytes early;
+        aa::pb::appendString(early, 2, std::string(evo::kombi::kMaxNavBody - 10, 'P'));
+        aa::pb::appendUint(early, 1, 1);
+        kombitest::put(in, evo::kombi::kNavStatus, early);
+        CHECK(in.guiding());
+    }
+    // At most 16 lanes are read (a row of more than 8 is never drawn), and a lane of more than 16 directions is left
+    // empty, so that no row is drawn from it.
+    {
+        std::vector<kombitest::Lane> many(1000, kombitest::lane(1, 1));
+        m = next(kombitest::inbox(kombitest::state(Step(7, "R").with(many))));
+        CHECK(m.lanes.size() == 16 && m.lanes[15].size() == 1);
+        kombitest::Lane wide;
+        for (int i = 0; i < 17; ++i) {
+            wide.push_back(kombitest::lane(1)[0]);
+        }
+        m = next(kombitest::inbox(kombitest::state(Step(7, "R").with(wide).with(kombitest::lane(2, 1)))));
+        CHECK(m.lanes.size() == 2 && m.lanes[0].empty() && m.lanes[1].size() == 1);
+        wide.pop_back();
+        m = next(kombitest::inbox(kombitest::state(Step(7, "R").with(wide))));
+        CHECK(m.lanes.size() == 1 && m.lanes[0].size() == 16);
+    }
+    // The revision moves on with each message kept and each clear, not with a message the arrows do not read: the
+    // service copies the inbox again only then.
+    {
+        NavInbox in;
+        const unsigned first = in.revision();
+        kombitest::put(in, evo::kombi::kNavStatus, kombitest::status(1));
+        const unsigned kept = in.revision();
+        CHECK(kept != first);
+        kombitest::put(in, evo::kombi::kNavStatus, kombitest::status(1));  // the same body again: still news
+        CHECK(in.revision() != kept);
+        const unsigned again = in.revision();
+        CHECK(!in.keep(0x8001, reinterpret_cast<const uint8_t*>("x"), 1) && in.revision() == again);
+        const NavInbox copy = in;
+        CHECK(copy.revision() == again);
+        in.clear();
+        CHECK(in.revision() != again && in.revision() != first && !in.guiding());
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -200,6 +293,7 @@ int main() {
     lanesLeftToRight();
     olderMessages();
     hostileMessages();
-    puts("PASS kombi phone: status, step, distance, lanes, older messages, hostile input");
+    boundedInbox();
+    puts("PASS kombi phone: status, step, distance, lanes, older messages, hostile input, bounded inbox");
     return 0;
 }

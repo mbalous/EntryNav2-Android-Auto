@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -229,6 +230,25 @@ void textAsUtf16() {
         }
     }
     CHECK(roads == 2);
+    // What UTF-16 cannot hold or UTF-8 does not allow is one U+FFFD each: past U+10FFFF (F4 90 80 80 would come out
+    // as a lone low surrogate), a surrogate written in UTF-8 (ED A0 80), an overlong NUL (C0 80), which would have cut
+    // the text.
+    out.clear();
+    CHECK(RouteGraph().routeStart(ClusterManeuver(1,
+                                                  "\xf4\x90\x80\x80\xed\xa0\x80\xc0\x80"
+                                                  "B",
+                                                  "1", kClusterMetres),
+                                  out));
+    const uint8_t bad[] = {12, 0xFE, 0xFF, 0xFF, 0xFD, 0xFF, 0xFD, 0xFF, 0xFD, 0, 'B', 0, 0};
+    roads = 0;
+    for (size_t i = 0; i < out.size(); ++i) {
+        if (is(out[i], 0x0003, 3, 0)) {
+            const Bytes& b = out[i].body;
+            CHECK(b.size() >= 27 + sizeof(bad) && !memcmp(&b[27], bad, sizeof(bad)));
+            ++roads;
+        }
+    }
+    CHECK(roads == 2);
 }
 
 void cancels() {
@@ -338,6 +358,11 @@ void lanes() {
         CHECK(g.maneuverUpdate(ClusterManeuver(7, "R", "0.1", kClusterMiles, row), true, update) &&
               update.size() == 10);
     }
+    // A distance that is no number never reaches the cluster: NaN is at the maneuver, infinity at the section's end.
+    const LaneSection section = {3952.0, 180.0};
+    CHECK(lanePosition(section, true, std::numeric_limits<double>::quiet_NaN()) == 3952.0);
+    CHECK(lanePosition(section, true, std::numeric_limits<double>::infinity()) == 4132.0);
+    CHECK(lanePosition(section, true, -std::numeric_limits<double>::infinity()) == 3952.0);
     // No lanes: the graph without a lane row, byte for byte.
     std::vector<Request> plain, empty;
     CHECK(g.routeStart(ClusterManeuver(6, "TEST ST", "0.3", kClusterMiles), plain));

@@ -27,9 +27,9 @@ public:
 
     // Set before start().
     void setConnectionCallback(ClientConnectedCallback callback, void* user_data = nullptr);
-    // The car's hotspot address: listened on when it is up, and the /24 a phone must come from. Empty: every
-    // interface, anyone.
-    void setHotspotAddress(const std::string& ip) { hotspot_ = ip; }
+    // The car's hotspot address: listened on (with IP_FREEBIND when available), and the /24 a phone must come from.
+    // Empty: every interface, anyone. Non-empty invalid address: fails closed.
+    void setHotspotAddress(const std::string& ip);
 
     void notifySessionEnded() { busy_ = false; }  // the next phone can come in
     void markSessionActive() { busy_ = true; }    // again, once the session started
@@ -43,6 +43,9 @@ private:
 
     uint16_t port_;
     std::string hotspot_;
+    bool hasHotspot_;
+    bool hotspotValid_;
+    uint32_t hotspotAddr_;  // network order
     ClientConnectedCallback callback_;
     void* user_;
     pthread_t thread_;
@@ -50,7 +53,7 @@ private:
     std::atomic<bool> busy_;
     // Listener thread only, while running.
     int listener_;
-    unsigned failures_;  // select() or accept() failures in a row
+    unsigned failures_;  // poll() or accept4() failures in a row
     int lastError_;
     unsigned accepted_;
 };

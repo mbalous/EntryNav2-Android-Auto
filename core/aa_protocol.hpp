@@ -13,7 +13,9 @@ namespace aa {
 namespace channel {
 const uint8_t kControl = 0;
 const uint8_t kSensors = 1;
+const uint8_t kVideoDisplay2 = 2;  // video of the template's two other displays: set up, never given the focus
 const uint8_t kInputDisplay2 = 3;  // input sources of the template's two other displays: bound, nothing sent
+const uint8_t kVideoDisplay1 = 4;
 const uint8_t kInputDisplay1 = 5;
 const uint8_t kVideo = 6;  // the main display, the only picture shown
 const uint8_t kInput = 7;  // touchscreen and keys of the main display
@@ -26,9 +28,10 @@ const uint8_t kMicrophone = 14;
 inline bool isAudioSink(unsigned ch) {
     return ch == kGuidanceAudio || ch == kMediaAudio;
 }
-// The streams the phone sends the car, where it holds at most kMaxUnacked media messages without an ack.
+// The streams the phone sends the car, where it holds at most kMaxUnacked media messages without an ack: the media
+// sinks of the service discovery.
 inline bool isMediaSink(unsigned ch) {
-    return ch == kVideo || isAudioSink(ch);
+    return ch == kVideo || ch == kVideoDisplay2 || ch == kVideoDisplay1 || isAudioSink(ch);
 }
 inline bool isInput(unsigned ch) {
     return ch == kInputDisplay2 || ch == kInputDisplay1 || ch == kInput;
@@ -41,6 +44,11 @@ const size_t kHeaderSize = 4;
 const size_t kTotalSizeSize = 4;
 const size_t kMaxPayload = 0xFFFF;
 const size_t kMaxMessage = 8u * 1024u * 1024u;  // reassembly bound: a lost LAST must not grow a buffer for ever
+// The same for every channel together: each may hold a message being assembled, and 256 of them at kMaxMessage would
+// pass the memory of the head unit. A phone fragments one video frame at a time, far under this.
+const size_t kMaxPending = 12u * 1024u * 1024u;
+// Before TLS is established only the version exchange and handshake travel: no peer may queue megabytes pre-auth.
+const size_t kMaxPreTlsPending = 64u * 1024u;
 
 // Low two bits: where the frame sits in its message.
 const uint8_t kPositionMask = 0x03;
@@ -159,7 +167,8 @@ enum class Route {
 
 // The order is the rule. First the services that reuse the media ids on their own channel: the generic media handling
 // must not take them (taking a navigation 0x8007 for a video focus request made the phone drop the session as soon as
-// guidance started, and reconnect). Then the media messages, whatever the channel; then the control channel.
+// guidance started, and reconnect). Then the media messages, on the media sinks only (elsewhere ids 0 and 1 are no
+// media, and a media ack there would mean nothing to the phone); then the control channel.
 inline Route routeOf(uint8_t ch, uint16_t id) {
     if (ch == channel::kSensors && id == msg::kSensorStartRequest) {
         return Route::kSensorStart;
@@ -194,7 +203,10 @@ inline Route routeOf(uint8_t ch, uint16_t id) {
             break;
         case msg::kMediaData:
         case msg::kMediaConfig:
-            return Route::kMedia;
+            if (channel::isMediaSink(ch)) {
+                return Route::kMedia;
+            }
+            break;
         default:
             break;
     }

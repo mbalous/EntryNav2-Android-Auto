@@ -4,9 +4,11 @@
 // and the hold (car_signals.hpp).
 #include "car_signals.hpp"
 
+#include <cxxabi.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "../platform/atomic_file.hpp"
 #include "../platform/service_contract.hpp"
 #include "app_log.hpp"
 #include "cds_parse.hpp"
@@ -35,23 +37,32 @@ HoldMachine* g_hold = nullptr;
 // ---- car gear -> service (reverse: the camera shows, Android Auto steps aside) --------------------------------------
 int g_lastGear = kGearUnknown;
 bool onGearChanged(void*, const bmw::BasicString<unsigned short>& value) {
-    char text[160];
-    narrow(value, text, sizeof(text));
-    int gear = -1;
-    for (size_t i = 0; text[i]; ++i) {
-        if (text[i] >= '0' && text[i] <= '9') {
-            gear = atoi(text + i);
-            break;
+    try {
+        if (!g_hold) {
+            return true;
         }
-    }
-    if (gear != g_lastGear) {
-        alog("CDS %s = '%s' -> gear %d", kGearProperty, text, gear);
-        g_lastGear = gear;
-        if (g_hold->gearChanged(gear, monoSeconds())) {
-            char msg[32];
-            snprintf(msg, sizeof(msg), "gear %d", gear);
-            sendToService(msg);
+        char text[160];
+        narrow(value, text, sizeof(text));
+        int gear = -1;
+        for (size_t i = 0; text[i]; ++i) {
+            if (text[i] >= '0' && text[i] <= '9') {
+                gear = atoi(text + i);
+                break;
+            }
         }
+        if (gear != g_lastGear) {
+            alog("CDS %s = '%s' -> gear %d", kGearProperty, text, gear);
+            g_lastGear = gear;
+            if (g_hold->gearChanged(gear, monoSeconds())) {
+                char msg[32];
+                snprintf(msg, sizeof(msg), "gear %d", gear);
+                sendToService(msg);
+            }
+        }
+    } catch (abi::__forced_unwind&) {
+        throw;  // a thread being cancelled
+    } catch (...) {
+        alog("exception in onGearChanged");
     }
     return true;
 }
@@ -60,27 +71,46 @@ bool onGearChanged(void*, const bmw::BasicString<unsigned short>& value) {
 // ------------------------------------------
 int g_lastPdc = kPdcUnknown;
 bool onPdcChanged(void*, const bmw::BasicString<unsigned short>& value) {
-    char text[160];
-    narrow(value, text, sizeof(text));
-    const int pdc = aa::cdsIntField(text, "PDCStatus", -1);
-    if (pdc != g_lastPdc) {
-        alog("CDS %s = '%s' -> park assist %d", kPdcProperty, text, pdc);
-        g_lastPdc = pdc;
-        g_hold->pdcChanged(pdc);
+    try {
+        if (!g_hold) {
+            return true;
+        }
+        char text[160];
+        narrow(value, text, sizeof(text));
+        const int pdc = aa::cdsIntField(text, "PDCStatus", -1);
+        if (pdc != g_lastPdc) {
+            alog("CDS %s = '%s' -> park assist %d", kPdcProperty, text, pdc);
+            g_lastPdc = pdc;
+            g_hold->pdcChanged(pdc);
+        }
+    } catch (abi::__forced_unwind&) {
+        throw;  // a thread being cancelled
+    } catch (...) {
+        alog("exception in onPdcChanged");
     }
     return true;
 }
 
-// ---- the iDrive screen shown: logged, nothing decided on it yet -----------------------------------------------------
+// ---- the iDrive screen shown: logged, and told to the hold machine (its radio page, #138) ---------------------------
 // Which numbers the camera and panorama views have on this head unit is not known: the log tells, screen by screen.
 int g_lastScreen = -1000;
 bool onScreenChanged(void*, const bmw::BasicString<unsigned short>& value) {
-    char text[240];
-    narrow(value, text, sizeof(text));
-    const int screen = aa::cdsIntField(text, "visibleContext", -1);
-    if (screen != g_lastScreen) {
-        g_lastScreen = screen;
-        alog("CDS %s = '%s'", kScreenProperty, text);
+    try {
+        if (!g_hold) {
+            return true;
+        }
+        char text[240];
+        narrow(value, text, sizeof(text));
+        const int screen = aa::cdsIntField(text, "visibleContext", -1);
+        if (screen != g_lastScreen) {
+            g_lastScreen = screen;
+            alog("CDS %s = '%s'", kScreenProperty, text);
+            g_hold->screenChanged(screen);
+        }
+    } catch (abi::__forced_unwind&) {
+        throw;  // a thread being cancelled
+    } catch (...) {
+        alog("exception in onScreenChanged");
     }
     return true;
 }
@@ -88,15 +118,24 @@ bool onScreenChanged(void*, const bmw::BasicString<unsigned short>& value) {
 // ---- phone calls: iDrive may show its own call screen; Android Auto shows the call too ------------------------------
 bool g_callLine[2] = {false, false};
 bool onCallStatus(int line, const bmw::BasicString<unsigned short>& value) {
-    char text[200];
-    narrow(value, text, sizeof(text));
-    bool active = aa::cdsCallActive(text);
-    bool was = callActive();
-    g_callLine[line] = active;
-    g_hold->callChanged(callActive(), monoSeconds());
-    alog("CDS %s = '%s' -> %s", kCallProps[line], text, active ? "in a call" : "idle");
-    if (was != callActive()) {
-        sendToService(callActive() ? "call 1" : "call 0");  // phone keys follow iDrive's call
+    try {
+        if (!g_hold) {
+            return true;
+        }
+        char text[200];
+        narrow(value, text, sizeof(text));
+        bool active = aa::cdsCallActive(text);
+        bool was = callActive();
+        g_callLine[line] = active;
+        g_hold->callChanged(callActive(), monoSeconds());
+        alog("CDS %s = '%s' -> %s", kCallProps[line], text, active ? "in a call" : "idle");
+        if (was != callActive()) {
+            sendToService(callActive() ? "call 1" : "call 0");  // phone keys follow iDrive's call
+        }
+    } catch (abi::__forced_unwind&) {
+        throw;  // a thread being cancelled
+    } catch (...) {
+        alog("exception in onCallStatus");
     }
     return true;
 }
@@ -110,25 +149,34 @@ bool onCallStatus1(void*, const bmw::BasicString<unsigned short>& v) {
 // ---- day and night --------------------------------------------------------------------------------------------------
 int g_lastDayNight = -1000;
 bool onDayNightChanged(void*, const bmw::BasicString<unsigned short>& value) {
-    char text[160];
-    narrow(value, text, sizeof(text));
-    int v = aa::cdsIntField(text, "dayNightChangeOver", -1);
-    if (v == g_lastDayNight) {
-        return true;
+    try {
+        if (!g_hold) {
+            return true;
+        }
+        char text[160];
+        narrow(value, text, sizeof(text));
+        int v = aa::cdsIntField(text, "dayNightChangeOver", -1);
+        if (v == g_lastDayNight) {
+            return true;
+        }
+        g_lastDayNight = v;
+        alog("CDS %s = '%s' -> %d (1 day, 2 night, 0 no change, 3 invalid)", kDayNightProperty, text, v);
+        if (v != 1 && v != 2) {
+            return true;
+        }
+        char line[32];
+        const int n = snprintf(line, sizeof(line), "daynight %d\n", v);
+        if (n > 0 && n < static_cast<int>(sizeof(line))) {
+            writeAtomicFile(contract::kDayNightFile, line, static_cast<size_t>(n));
+        }
+        char msg[32];
+        snprintf(msg, sizeof(msg), "daynight %d", v);
+        sendToService(msg);
+    } catch (abi::__forced_unwind&) {
+        throw;  // a thread being cancelled
+    } catch (...) {
+        alog("exception in onDayNightChanged");
     }
-    g_lastDayNight = v;
-    alog("CDS %s = '%s' -> %d (1 day, 2 night, 0 no change, 3 invalid)", kDayNightProperty, text, v);
-    if (v != 1 && v != 2) {
-        return true;
-    }
-    FILE* f = fopen(contract::kDayNightFile, "w");
-    if (f) {
-        fprintf(f, "daynight %d\n", v);
-        fclose(f);
-    }
-    char msg[32];
-    snprintf(msg, sizeof(msg), "daynight %d", v);
-    sendToService(msg);
     return true;
 }
 
@@ -136,35 +184,44 @@ bool onDayNightChanged(void*, const bmw::BasicString<unsigned short>& value) {
 int g_lastDriveMode[2] = {-1000, -1000};
 long g_driveModeSubAt = -1;
 bool onDriveMode(int prop, const bmw::BasicString<unsigned short>& value) {
-    char text[160];
-    narrow(value, text, sizeof(text));
-    int v = aa::cdsIntField(text, "mode", -1);
-    int was = g_lastDriveMode[prop];
-    if (v == was) {
-        return true;
+    try {
+        if (!g_hold) {
+            return true;
+        }
+        char text[160];
+        narrow(value, text, sizeof(text));
+        int v = aa::cdsIntField(text, "mode", -1);
+        int was = g_lastDriveMode[prop];
+        if (v == was) {
+            return true;
+        }
+        const int invalid = prop == 1 ? 63 : 15;  // "not valid" values
+        alog("CDS %s = '%s' -> mode %d%s", kDriveModeProps[prop], text, v, v == invalid || v < 0 ? " (not valid)" : "");
+        g_lastDriveMode[prop] = v;
+        const bool valid = v >= 0 && v != invalid;
+        // A change between two valid modes, or a first valid value well after subscribing (some variants send none).
+        const bool change = valid && ((was >= 0 && was != invalid) ||
+                                      (was < 0 && g_driveModeSubAt >= 0 && monoSeconds() - g_driveModeSubAt >= 5));
+        if (!change) {
+            return true;
+        }
+        // With iDrive's driving mode popup turned off, nothing comes to show: Android Auto stays, and should a popup
+        // still open, the ordinary popup peek steps aside for it.
+        const DriveModePopup popup = readDriveModePopup();
+        if (!driveModePopupExpected(popup.setting, popup.forced)) {
+            alog("drive mode change: iDrive's driving mode popup is off, Android Auto stays on screen");
+            return true;
+        }
+        char msg[32];
+        snprintf(msg, sizeof(msg), "drivemode %d", v);
+        sendToService(msg);
+        alog("drive mode change -> service (%s)", msg);
+        g_hold->driveModeChanged(monoSeconds());
+    } catch (abi::__forced_unwind&) {
+        throw;  // a thread being cancelled
+    } catch (...) {
+        alog("exception in onDriveMode");
     }
-    const int invalid = prop == 1 ? 63 : 15;  // "not valid" values
-    alog("CDS %s = '%s' -> mode %d%s", kDriveModeProps[prop], text, v, v == invalid || v < 0 ? " (not valid)" : "");
-    g_lastDriveMode[prop] = v;
-    const bool valid = v >= 0 && v != invalid;
-    // A change between two valid modes, or a first valid value well after subscribing (some variants send none).
-    const bool change = valid && ((was >= 0 && was != invalid) ||
-                                  (was < 0 && g_driveModeSubAt >= 0 && monoSeconds() - g_driveModeSubAt >= 5));
-    if (!change) {
-        return true;
-    }
-    // With iDrive's driving mode popup turned off, nothing comes to show: Android Auto stays, and should a popup
-    // still open, the ordinary popup peek steps aside for it.
-    const DriveModePopup popup = readDriveModePopup();
-    if (!driveModePopupExpected(popup.setting, popup.forced)) {
-        alog("drive mode change: iDrive's driving mode popup is off, Android Auto stays on screen");
-        return true;
-    }
-    char msg[32];
-    snprintf(msg, sizeof(msg), "drivemode %d", v);
-    sendToService(msg);
-    alog("drive mode change -> service (%s)", msg);
-    g_hold->driveModeChanged(monoSeconds());
     return true;
 }
 bool onDriveMode0(void*, const bmw::BasicString<unsigned short>& v) {
@@ -195,6 +252,10 @@ void subscribeCarSignals(bmw::PluginApp* app, HoldMachine& hold) {
         addCdsHandler(app, kDriveModeProps[i], i == 0 ? &onDriveMode0 : &onDriveMode1);
         alog("CDS handler for %s registered", kDriveModeProps[i]);
     }
+}
+
+void detachCarSignals() {
+    g_hold = nullptr;
 }
 
 bool callActive() {

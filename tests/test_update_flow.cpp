@@ -17,6 +17,7 @@
 namespace {
 
 using evo::UpdateResult;
+using evo::app::PendingRestart;
 using evo::app::UpdateFlow;
 namespace app = evo::app;
 
@@ -42,9 +43,9 @@ UpdateFlow checked(UpdateResult found) {
 
 void firstPress() {
     UpdateFlow f;
-    CHECK(f.text() == app::kTextUpdate && !f.holdsAndroidAuto());
+    CHECK(f.text() == app::kTextUpdate && !f.holdsAndroidAuto() && !f.needsAndroidAutoState());
     CHECK(f.press(10, kRunning) == UpdateFlow::kStartCheck);  // reading the stick needs nothing stopped
-    CHECK(!f.holdsAndroidAuto());
+    CHECK(!f.holdsAndroidAuto() && !f.needsAndroidAutoState());
     CHECK(f.press(11, kRunning) == UpdateFlow::kNothing);                  // pressed again while it reads the stick
     CHECK(f.poll(200, kRunning) == UpdateFlow::kNothing && f.checking());  // a check ends when its program says so
     UpdateFlow notStarted;
@@ -98,15 +99,17 @@ void notDuringACallOrInReverse() {
     UpdateFlow stopping = checked(UpdateResult::kNewer);
     CHECK(stopping.press(110, kRunning) == UpdateFlow::kStopAndroidAuto);
     CHECK(stopping.poll(112, car(false, false)) == UpdateFlow::kNothing);
-    CHECK(stopping.text() == app::kTextUpdateNotNow && !stopping.holdsAndroidAuto() && stopping.takeRestart());
-    CHECK(!stopping.takeRestart());  // once
+    CHECK(stopping.text() == app::kTextUpdateNotNow && !stopping.holdsAndroidAuto());
+    CHECK(stopping.takeRestart() == PendingRestart::kStart);  // already stopped: at once
+    CHECK(!stopping.takeRestart());                           // once
     printf("PASS not during a call or in reverse\n");
 }
 
 void androidAutoStoppedFirst() {
     UpdateFlow f = checked(UpdateResult::kNewer);
     CHECK(f.press(110, kRunning) == UpdateFlow::kStopAndroidAuto && f.text() == app::kTextUpdateStopping);
-    CHECK(f.holdsAndroidAuto());                                // nothing may start it again meanwhile
+    CHECK(f.holdsAndroidAuto() && f.needsAndroidAutoState() &&
+          !f.restartAsked());                                   // nothing may start it again meanwhile
     CHECK(f.press(111, kRunning) == UpdateFlow::kNothing);      // pressed again: one stop is enough
     CHECK(f.poll(115, kRunning) == UpdateFlow::kNothing);       // still stopping
     CHECK(f.poll(116, kStopped) == UpdateFlow::kStartInstall);  // stopped, Bluetooth given back: the install starts
@@ -114,7 +117,8 @@ void androidAutoStoppedFirst() {
     // Installed: Android Auto stays stopped, the unit restarts.
     f.ended(code(UpdateResult::kInstalled), 120);
     CHECK(!f.takeRestart());
-    // Refused before any change: Android Auto, stopped for it, starts again.
+    // Refused before any change: Android Auto, stopped for it, starts again at the status poll that reads the outcome
+    // (the app's poll hands it the end of the install, then polls).
     const int refusals[] = {code(UpdateResult::kFailed),
                             code(UpdateResult::kIncompatible),
                             code(UpdateResult::kInvalid),
@@ -128,7 +132,9 @@ void androidAutoStoppedFirst() {
         r.press(110, kRunning);
         r.poll(111, kStopped);
         r.ended(refusals[i], 115);
-        CHECK(!r.holdsAndroidAuto() && r.takeRestart() && !r.takeRestart());
+        CHECK(!r.holdsAndroidAuto());
+        r.poll(115, kStopped);
+        CHECK(r.takeRestart() == PendingRestart::kStart && !r.takeRestart());
     }
     // Part of it may be in place: Android Auto is left stopped, the button says so.
     const int partial[] = {code(UpdateResult::kIncomplete), -2};
@@ -144,7 +150,9 @@ void androidAutoStoppedFirst() {
     notStarted.press(110, kRunning);
     notStarted.poll(111, kStopped);
     notStarted.startFailed(111);
-    CHECK(notStarted.text() == app::kTextUpdateFailed && notStarted.takeRestart());
+    CHECK(notStarted.text() == app::kTextUpdateFailed);
+    notStarted.poll(112, kStopped);
+    CHECK(notStarted.takeRestart() == PendingRestart::kStart);
     // Android Auto never stops: given up, nothing installed, starts allowed again.
     UpdateFlow stuck = checked(UpdateResult::kNewer);
     stuck.press(110, kRunning);
@@ -152,6 +160,55 @@ void androidAutoStoppedFirst() {
     CHECK(stuck.poll(110 + app::kUpdateStopS, kRunning) == UpdateFlow::kNothing);
     CHECK(stuck.text() == app::kTextUpdateBusy && !stuck.holdsAndroidAuto());
     printf("PASS Android Auto stopped first\n");
+}
+
+// Given up while Android Auto was still stopping (code review of 25/11, M12.3): the start was asked for at once, the
+// supervisor still giving the Bluetooth back refused it, and Android Auto stayed stopped without a word. It is started
+// once nothing of it is left, the way the USB checkbox's restart waits (pending_restart.hpp).
+UpdateFlow givenUpWhileStopping() {
+    UpdateFlow f = checked(UpdateResult::kNewer);
+    CHECK(f.press(110, kRunning) == UpdateFlow::kStopAndroidAuto);
+    CHECK(f.poll(112, car(true, false)) == UpdateFlow::kNothing);  // a call: given up, Android Auto still stopping
+    CHECK(f.text() == app::kTextUpdateNotNow && !f.holdsAndroidAuto() && f.needsAndroidAutoState() && f.restartAsked());
+    return f;
+}
+void restartOnceStopped() {
+    {  // started again once it has stopped, call or not, once
+        UpdateFlow f = givenUpWhileStopping();
+        CHECK(!f.takeRestart());
+        for (long t = 113; t < 125; ++t) {
+            f.poll(t, car(true, false));
+            CHECK(!f.takeRestart());  // its supervisor still gives the Bluetooth back
+        }
+        f.poll(125, car(false, false));
+        CHECK(f.takeRestart() == PendingRestart::kStart && !f.takeRestart());
+        f.poll(126, kStopped);
+        CHECK(!f.takeRestart());
+    }
+    {  // never gone: left as it is after kRestartGiveUpS, said once, and not started later behind the driver's back
+        UpdateFlow f = givenUpWhileStopping();
+        f.poll(112 + app::kRestartGiveUpS - 1, kRunning);
+        CHECK(!f.takeRestart());
+        f.poll(112 + app::kRestartGiveUpS, kRunning);
+        CHECK(f.takeRestart() == PendingRestart::kGiveUp && !f.takeRestart());
+        f.poll(112 + app::kRestartGiveUpS + 1, kStopped);
+        CHECK(!f.takeRestart());
+    }
+    {  // Start or Stop by hand meanwhile: the driver decides, nothing is started for the update
+        UpdateFlow f = givenUpWhileStopping();
+        f.poll(113, kRunning);
+        f.cancelRestart();
+        f.poll(114, kStopped);
+        CHECK(!f.takeRestart());
+    }
+    {  // the update pressed again meanwhile, up to its install: that install needs Android Auto stopped
+        UpdateFlow f = givenUpWhileStopping();
+        CHECK(f.press(113, kRunning) == UpdateFlow::kStartCheck);  // reading the stick: the restart still waits
+        f.ended(code(UpdateResult::kNewer), 114);
+        CHECK(f.press(115, kRunning) == UpdateFlow::kStopAndroidAuto);
+        CHECK(f.poll(116, kStopped) == UpdateFlow::kStartInstall && !f.takeRestart());
+    }
+    printf("PASS restarted once Android Auto has stopped\n");
 }
 
 void outcomes() {
@@ -195,6 +252,7 @@ int main() {
     readyToInstall();
     notDuringACallOrInReverse();
     androidAutoStoppedFirst();
+    restartOnceStopped();
     outcomes();
     printf("PASS update flow\n");
     return 0;

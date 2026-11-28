@@ -5,21 +5,37 @@
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
-#include <string>
-
+#include "../platform/atomic_file.hpp"
 #include "../platform/car_brand.hpp"
 #include "../platform/car_series.hpp"
 #include "../platform/controller_layout.hpp"
 #include "../platform/driver_side.hpp"
 #include "../platform/service_contract.hpp"
 #include "app_log.hpp"
+#include "posted_task.hpp"
+#include "vtable_check.hpp"
 
 namespace evo {
 namespace app {
 
 namespace {
+
+// iDrive's lookups below go through its per-thread instance cache: refused inside one of the app's posted tasks
+// (posted_task.hpp), where they would stop the thread. Logged once per caller; the caller keeps what it knew.
+bool lookupRefused(const char* what, bool& logged) {
+    if (idriveLookupSafe()) {
+        return false;
+    }
+    if (!logged) {
+        logged = true;
+        alog("iDrive %s: not read inside a posted task (iDrive's per-thread lookup would stop its thread), kept as is",
+             what);
+    }
+    return true;
+}
 
 // HmiMain3D's exported template instances (nm -D: weak, defined). The usage object is one pointer-sized value,
 // returned in r0 (read in pushbuttonToKeycode: the result of get() is stored, then its address is passed to get()).
@@ -27,6 +43,10 @@ const char kGetUsage[] = "_ZN9hmiplugin3getI17IHmiVariantServerEENS_25CPluginIns
 const char kUsageGet[] = "_ZNK9hmiplugin25CPluginInstanceCacheUsageI17IHmiVariantServerE3getEv";
 const unsigned kIsVariantSetSlot = 3;  // CHmiVariantServer vtable (libhmicoding.so): isVariantSet(unsigned)
 const unsigned kGetRoleSlot = 21;      // getRole()
+// What those two slots hold on the car (R_ARM_ABS32 against these symbols, readelf -r on libhmicoding.so): a slot
+// holding anything else is another layout, and calling it could bring HmiMain3D down.
+const char kIsVariantSet[] = "_ZN17CHmiVariantServer12isVariantSetEj";
+const char kGetRole[] = "_ZN17CHmiVariantServer7getRoleEv";
 
 typedef uintptr_t (*GetUsageFn)();
 typedef void* (*UsageGetFn)(const uintptr_t* usage);
@@ -46,10 +66,16 @@ public:
             self_ = usageGet(&usage);
         }
         void** vtable = self_ ? *reinterpret_cast<void***>(self_) : nullptr;
-        if (!vtable || !vtable[kIsVariantSetSlot] || !vtable[kGetRoleSlot]) {
+        const VtableSlot expected[] = {
+            {static_cast<int>(kIsVariantSetSlot), dlsym(RTLD_DEFAULT, kIsVariantSet)},
+            {static_cast<int>(kGetRoleSlot), dlsym(RTLD_DEFAULT, kGetRole)},
+        };
+        if (!vtableSlotsHold(vtable, expected, 2)) {
             if (logMissing) {
-                alog("iDrive coding: variant server not found (%s %s): the service keeps G-style keys and a BMW",
-                     getUsage ? "get" : "no get", usageGet ? "usage" : "no usage");
+                alog(
+                    "iDrive coding: variant server not found or another layout (%s %s %s): the service keeps "
+                    "G-style keys and a BMW",
+                    getUsage ? "get" : "no get", usageGet ? "usage" : "no usage", vtable ? "vtable" : "no vtable");
             }
             return false;
         }
@@ -121,14 +147,9 @@ const char* readText(int value) {
 // One line to path, through a temporary file renamed over it: the service never reads half a line. On failure the
 // file is removed, so the service falls back to its default rather than an old value.
 bool writeLine(const char* path, const char* line) {
-    const std::string tmp = std::string(path) + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "w");
-    bool written = f && fprintf(f, "%s\n", line) > 0;
-    if (f && fclose(f) != 0) {
-        written = false;
-    }
-    if (!written || rename(tmp.c_str(), path) != 0) {
-        unlink(tmp.c_str());
+    char buf[160];
+    const int n = snprintf(buf, sizeof(buf), "%s\n", line);
+    if (n <= 0 || n >= static_cast<int>(sizeof(buf)) || !writeAtomicFile(path, buf, static_cast<size_t>(n))) {
         unlink(path);
         return false;
     }
@@ -199,6 +220,10 @@ bool writeSeries(const VariantServer& server) {
 }  // namespace
 
 bool writeIdriveCoding() {
+    static bool refusalLogged = false;
+    if (lookupRefused("coding", refusalLogged)) {
+        return false;  // the files written before stay
+    }
     VariantServer server;
     if (!server.find()) {
         unlink(contract::kControllerFile);
@@ -215,7 +240,11 @@ bool writeIdriveCoding() {
 }
 
 DriveModePopup readDriveModePopup() {
-    DriveModePopup popup;
+    DriveModePopup popup = {-1, -1};
+    static bool refusalLogged = false;
+    if (lookupRefused("driving mode popup", refusalLogged)) {
+        return popup;  // unread: Android Auto steps aside for the popup, as before the setting was read
+    }
     popup.setting = readPopupSetting();
     VariantServer server;
     popup.forced = server.find(false) ? (server.isSet(kVariantForcedPopup) ? 1 : 0) : -1;

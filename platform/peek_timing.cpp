@@ -56,6 +56,7 @@ bool PeekTiming::hardKey() {
         return false;
     }
     hideFrom_ = hideUntil_ = dimUntil_ = 0;
+    popupHide_ = false;
     return true;
 }
 
@@ -99,6 +100,7 @@ PeekTiming::Picture PeekTiming::turn(uint32_t now, bool onScreen) {
     }
     if (!onScreen) {
         hideFrom_ = hideUntil_ = dimUntil_ = 0;
+        popupHide_ = false;
     }
     Picture picture;
     picture.shown = onScreen && !hiding;

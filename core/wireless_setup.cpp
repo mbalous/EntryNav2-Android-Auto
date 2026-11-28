@@ -3,7 +3,7 @@
 // Wireless Android Auto setup over Bluetooth RFCOMM: messages, the handshake, and the BMW app's link told apart.
 #include "wireless_setup.hpp"
 
-#include <sys/select.h>
+#include <poll.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -34,6 +34,7 @@ const size_t kMaxPending = 16384;
 const size_t kReadChunk = 2048;
 const int kMaxPeekMs = 3000;
 const int kWaitMs = 1000;
+const int kWriteWaitMs = 2000;       // upper bound when a non-blocking Bluetooth link stalls on write
 const uint64_t kJoinWaitMs = 45000;  // after the access point went out
 const int kResends = 2;
 
@@ -156,19 +157,44 @@ WirelessSetup::WirelessSetup(int fd, const ApInfo& ap, uint16_t port, int peekMs
       heard_(0) {}
 
 bool WirelessSetup::write(const std::vector<uint8_t>& message) {
+    if (fd_ < 0) {
+        return false;
+    }
     printf("[Wireless] RAW TX t=%llu +%u\n", static_cast<unsigned long long>(monotonicMs()),
            static_cast<unsigned>(message.size()));
     size_t done = 0;
+    const uint64_t deadline = monotonicMs() + static_cast<uint64_t>(kWriteWaitMs);
     while (done < message.size()) {
         const ssize_t n = ::write(fd_, &message[done], message.size() - done);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            if (errno == EAGAIN) {
-                usleep(10000);
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                const uint64_t now = monotonicMs();
+                if (now >= deadline) {
+                    errno = ETIMEDOUT;
+                    return false;
+                }
+                struct pollfd pfd;
+                pfd.fd = fd_;
+                pfd.events = POLLOUT;
+                pfd.revents = 0;
+                const int ready = poll(&pfd, 1, static_cast<int>(deadline - now));
+                if (ready < 0 && errno == EINTR) {
+                    continue;
+                }
+                if (ready <= 0 || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+                    if (ready == 0) {
+                        errno = ETIMEDOUT;  // the caller logs it: not the EAGAIN left from the write
+                    }
+                    return false;
+                }
                 continue;
             }
+            return false;
+        }
+        if (n == 0) {
             return false;
         }
         done += static_cast<size_t>(n);
@@ -177,18 +203,22 @@ bool WirelessSetup::write(const std::vector<uint8_t>& message) {
 }
 
 WirelessSetup::Fill WirelessSetup::fill(int waitMs) {
-    fd_set readable;
-    FD_ZERO(&readable);
-    FD_SET(fd_, &readable);
-    timeval wait;
-    wait.tv_sec = waitMs / 1000;
-    wait.tv_usec = (waitMs % 1000) * 1000;
-    const int ready = select(fd_ + 1, &readable, nullptr, nullptr, &wait);
+    if (fd_ < 0) {
+        return kGone;
+    }
+    struct pollfd pfd;
+    pfd.fd = fd_;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    const int ready = poll(&pfd, 1, waitMs);
     if (ready == 0) {
         return kQuiet;
     }
     if (ready < 0) {
         return errno == EINTR ? kQuiet : kGone;
+    }
+    if ((pfd.revents & POLLNVAL) || ((pfd.revents & (POLLERR | POLLHUP)) && !(pfd.revents & POLLIN))) {
+        return kGone;
     }
     uint8_t chunk[kReadChunk];
     const ssize_t n = read(fd_, chunk, sizeof(chunk));
@@ -246,8 +276,9 @@ WirelessSetup::Step WirelessSetup::handle(uint16_t id, const std::vector<uint8_t
     uint64_t status = 0;
     switch (id) {
         case kInfoRequest:
-            printf("[Wireless] TX WifiInfoResponse ssid='%s' bssid='%s' security=%d\n", ap_.ssid.c_str(),
-                   ap_.bssid.c_str(), ap_.security);
+            // Neither the network's name nor its address: users post this log, and both identify the car.
+            printf("[Wireless] TX WifiInfoResponse: ssid of %u byte(s), bssid %s, security=%d\n",
+                   static_cast<unsigned>(ap_.ssid.size()), ap_.bssid.empty() ? "missing" : "set", ap_.security);
             if (!write(infoResponse(ap_))) {
                 return kWriteFailed;
             }
@@ -341,24 +372,6 @@ bool WirelessSetup::handshake(int timeoutMs) {
                 return true;
             }
         }
-        const Fill filled = fill(kWaitMs);
-        if (filled == kGone) {
-            if (foreign_) {
-                return false;
-            }
-            // The phone closes Bluetooth on its way to Wi-Fi, once it accepted the start. Closed right after the
-            // access point without that is the warm-boot failure: the phone never joins.
-            if (progress.startAccepted && progress.infoSent) {
-                printf("[Wireless] phone closed Bluetooth after accepting the Wi-Fi start (joining)\n");
-                return true;
-            }
-            printf(progress.infoSent ? "[Wireless] phone closed Bluetooth before accepting the Wi-Fi start\n"
-                                     : "[Wireless] phone closed the Bluetooth link before the AP info was exchanged\n");
-            return false;
-        }
-        if (filled == kData) {
-            continue;
-        }
         const uint64_t now = monotonicMs();
         if (progress.infoSent) {
             if (now - infoSentMs > kJoinWaitMs) {
@@ -380,6 +393,22 @@ bool WirelessSetup::handshake(int timeoutMs) {
                 continue;
             }
             printf("[Wireless] timeout waiting for the phone\n");
+            return false;
+        }
+        const int sliceMs = (!progress.infoSent && timeoutMs > 0 && timeoutMs < kWaitMs) ? timeoutMs : kWaitMs;
+        const Fill filled = fill(sliceMs);
+        if (filled == kGone) {
+            if (foreign_) {
+                return false;
+            }
+            // The phone closes Bluetooth on its way to Wi-Fi, once it accepted the start. Closed right after the
+            // access point without that is the warm-boot failure: the phone never joins.
+            if (progress.startAccepted && progress.infoSent) {
+                printf("[Wireless] phone closed Bluetooth after accepting the Wi-Fi start (joining)\n");
+                return true;
+            }
+            printf(progress.infoSent ? "[Wireless] phone closed Bluetooth before accepting the Wi-Fi start\n"
+                                     : "[Wireless] phone closed the Bluetooth link before the AP info was exchanged\n");
             return false;
         }
     }

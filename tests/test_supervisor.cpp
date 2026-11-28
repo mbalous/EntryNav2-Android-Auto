@@ -16,6 +16,9 @@ unsigned testSlot = 0, started = 0, spareConfiguration = 0;
 bool spareReadable = false;
 unsigned configuration = 0, uuidWrites = 0, configWrites = 0, disconnects = 0;
 unsigned transientReads = 0, readerOpens = 0, readerCloses = 0;
+int dbusAlpsUid = 1011;    // the user D-Bus gives for org.alps.evolution (-1: none)
+bool alpsUnderUid = true;  // the Alps library is found among that user's processes
+std::vector<int> openedUids;
 bool failUuid = false, failConfig = false, videoGone = true, liveLink = false, failRead = false;
 int uuidStatus = 0;  // non-zero: the stack's answer to the next UUID writes (4: not ready yet, #97)
 bool flipKnown = true;
@@ -46,16 +49,23 @@ namespace evo {
 int updateFromUsb(bool, const char*) {  // tests/test_update_install.cpp
     return 0;
 }
+int rebootByHand() {  // platform/update_car.cpp, the car only; the restart itself: tests/test_evo_reboot.cpp
+    return 0;
+}
 unsigned hotspotRequests = 0;
 bool requestWlanAccessPoint(unsigned, WlanRequestResult*) {
     ++hotspotRequests;
     return true;
 }
+int queryAlpsServiceUid() {
+    return dbusAlpsUid;
+}
 SppSnapshotReader::SppSnapshotReader() : fd_(-1), pid_(123), base_(0), identity_("456") {}
 SppSnapshotReader::~SppSnapshotReader() {}
-bool SppSnapshotReader::open() {
+bool SppSnapshotReader::open(int, int uid) {
     ++readerOpens;
-    return true;
+    openedUids.push_back(uid);
+    return uid < 0 || alpsUnderUid;
 }
 void SppSnapshotReader::close() {
     ++readerCloses;
@@ -213,6 +223,15 @@ static void recoveryCases(const std::vector<uint8_t>& original) {
         unsigned o = readerOpens, c = readerCloses;
         assert(preflight(reader, checked));
         assert(readerOpens == o + 1 && readerCloses == c + 1);
+        // The stack under another user than the one D-Bus gives, or D-Bus silent: every process scanned, as before.
+        alpsUnderUid = false;
+        openedUids.clear();
+        assert(preflight(reader, checked) && openedUids.size() == 2 && openedUids[0] == 1011 && openedUids[1] == -1);
+        alpsUnderUid = true;
+        dbusAlpsUid = -1;
+        openedUids.clear();
+        assert(preflight(reader, checked) && openedUids.size() == 1 && openedUids[0] == -1);
+        dbusAlpsUid = 1011;
     }
     assert(uuidWrites == 0 && configWrites == 0 && disconnects == 0);
     // Hotspot off -> one request to wland (only with --service / g_wlanAuto), not repeated within 60 s.
@@ -587,6 +606,86 @@ void compatBluetoothCases() {
     assert(!strcmp(bluetoothLevel("block", false, detail), "block"));
     assert(detail == "wireless only, USB mode does not use Bluetooth");
 }
+// --compat's whole report, as printed.
+static std::string compatOutput() {
+    fflush(stdout);
+    char path[] = "/tmp/entry-aa-compat-test-XXXXXX";
+    const int fd = mkstemp(path);
+    const int saved = dup(1);
+    assert(fd >= 0 && saved >= 0 && dup2(fd, 1) == 1);
+    assert(compatReport() == 0);
+    alarm(0);  // set by the report for the car
+    fflush(stdout);
+    assert(dup2(saved, 1) == 1 && close(saved) == 0);
+    std::string text;
+    char chunk[512];
+    ssize_t n;
+    assert(lseek(fd, 0, SEEK_SET) == 0);
+    while ((n = read(fd, chunk, sizeof(chunk))) > 0) {
+        text.append(chunk, static_cast<size_t>(n));
+    }
+    assert(close(fd) == 0 && unlink(path) == 0);
+    return "\n" + text;
+}
+static bool reported(const std::string& text, const char* line) {
+    return text.find("\n" + std::string(line) + "\n") != std::string::npos;
+}
+// --compat reads the Bluetooth slot a start would take, by the same rule (spp_baseline.hpp): with slot 5 free, My
+// BMW connected on slot 0 or a UUID of another app there says nothing about Android Auto.
+static void compatSlotCases(const std::vector<uint8_t>& bmw, const std::vector<uint8_t>& generic) {
+    const std::vector<uint8_t> other(bmw.size(), 0x22);
+    phoneComing = false;
+    failRead = false;
+    transientReads = 0;
+    // Slot 5 free, My BMW connected on slot 0: Android Auto takes 5.
+    testSlot = 5;
+    simulated = evo::SppSlotSnapshot();
+    simulated.state = 1;
+    simulated.uuidPayload = simulated.transportUuidPayload = generic;
+    spare = evo::SppSlotSnapshot();
+    spare.state = 2;
+    spare.transportState = 1;
+    spare.connected = true;
+    spare.uuidPayload = spare.transportUuidPayload = bmw;
+    spareReadable = true;
+    std::string text = compatOutput();
+    assert(reported(text, "@ok|alps|SPP 5") && reported(text, "@ok|uuid|011101011101") && reported(text, "@ok|spp|"));
+    // Slot 5 free, another app's UUID on slot 0: no false @block.
+    spare = evo::SppSlotSnapshot();
+    spare.state = 1;
+    spare.uuidPayload = spare.transportUuidPayload = other;
+    text = compatOutput();
+    assert(reported(text, "@ok|alps|SPP 5") && reported(text, "@ok|uuid|011101011101"));
+    assert(text.find("|uuid|" + hex(other)) == std::string::npos);
+    // Slot 5 holding Android Auto (a restore still due): a start waits; its UUID is ours, not a block.
+    simulated.uuidPayload = simulated.transportUuidPayload = aaPayload();
+    text = compatOutput();
+    assert(text.find("\n@warn|alps|SPP 5 connected or still holding Android Auto") != std::string::npos);
+    assert(text.find("|uuid|") == std::string::npos && text.find("|spp|") == std::string::npos);
+    // Slot 5 not started: slot 0, as a start takes it, checked as before.
+    testSlot = 0;
+    simulated = evo::SppSlotSnapshot();
+    simulated.state = 1;
+    simulated.uuidPayload = simulated.transportUuidPayload = bmw;
+    spare = evo::SppSlotSnapshot();
+    spare.uuidPayload = spare.transportUuidPayload = generic;
+    text = compatOutput();
+    assert(reported(text, "@ok|alps|SPP 0") && reported(text, ("@ok|uuid|" + hex(bmw)).c_str()));
+    assert(reported(text, "@ok|spp|"));
+    simulated.state = 2;
+    simulated.connected = true;  // My BMW connected on the slot Android Auto would share: doubtful
+    text = compatOutput();
+    assert(reported(text, "@warn|alps|SPP 0; wireless only, USB mode does not use Bluetooth"));
+    simulated.state = 1;
+    simulated.connected = false;
+    simulated.uuidPayload = simulated.transportUuidPayload = other;  // a pair it could not restore: blocked
+    text = compatOutput();
+    assert(text.find("\n@block|uuid|" + hex(other)) != std::string::npos);
+    spareReadable = false;  // slot 5 unreadable: slot 0 too
+    simulated.uuidPayload = simulated.transportUuidPayload = bmw;
+    text = compatOutput();
+    assert(reported(text, "@ok|alps|SPP 0"));
+}
 int main() {
     const uint8_t generic[] = {1, 0x11, 1, 1, 0x11, 1};
     const std::vector<uint8_t> genericPair(generic, generic + 6);
@@ -626,8 +725,9 @@ int main() {
     slotCases(bmw, genericPair);
     advertisementCases();
     compatBluetoothCases();
+    compatSlotCases(bmw, genericPair);
     puts(
         "PASS supervisor: actual BMW and generic preflight, exact child snapshot, saved pairs reloaded/restored, "
         "partial failures and busy/third-party refusals, slot 5 with slot 0 left to BMW Apps, a phone back on the "
-        "slot during the restore, Bluetooth points of the check for wireless only");
+        "slot during the restore, Bluetooth points of the check for wireless only and on the slot a start takes");
 }

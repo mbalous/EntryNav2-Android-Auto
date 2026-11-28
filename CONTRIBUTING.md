@@ -1,8 +1,8 @@
 # Contribuer
 
-*Contributions in English are welcome too. The project documentation is in French; code, comments and commit
-scopes are in English. Pull requests are squash-merged: the pull request title (Conventional Commits) becomes the
-commit title. No need to rebase or reword your commits.*
+*Contributions in English are welcome too. The project documentation is in French (the installation guide and the
+changelog also exist in English); code, comments and commit scopes are in English. Pull requests are squash-merged: the
+pull request title (Conventional Commits) becomes the commit title. No need to rebase or reword your commits.*
 
 Merci de votre intérêt ! Le plus utile, par ordre :
 
@@ -102,7 +102,9 @@ l'iDrive en français. Chaque fichier source commence par :
 ## Publier une version
 
 1. `make check`, la compilation ARM, `tests/run_qemu.py`, `make verify_binary verify_wireless`.
-2. Mettre à jour `VERSION` et `CHANGELOG.md` (section de la version, date, « PC » ou « voiture »).
+2. Mettre à jour `VERSION`, `CHANGELOG.md` et `CHANGELOG.en.md` (section de la version, date, « PC » ou
+   « voiture »), et le numéro des commandes de `docs/INSTALLATION.md` et `docs/INSTALLATION.en.md` :
+   `tests/test_docs.py` vérifie que les deux guides ont les mêmes commandes.
 3. `python3 tools/package_release.py` : `artifacts/entrynav2-android-auto-X.Y.Z-armhf.tar` et son `.sha256`, sa liste
    `UPDATE` signée par la clé du projet (`.secrets/update-signing-key.pem`, chez le mainteneur seulement) pour la mise
    à jour par clé USB. Sans cette clé, `--unsigned` fabrique une archive qui s'installe par SSH seulement.

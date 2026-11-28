@@ -83,7 +83,6 @@ hu ch=6 fl=0b 8004 08051001 (x5)
 hu ch=8 fl=0b 8004 08071001 (x2)
 hu ch=9 fl=0b 8004 08001001
 hu ch=4 fl=0b 8004 08a1021001
-hu ch=1 fl=0b 8004 08001001
 hu ch=0 fl=03 000c 08857f
 -- video focus asked by the phone
 ph ch=6 fl=0b 8007 080010021801
@@ -261,7 +260,6 @@ ph ch=12 fl=0b 8001 0801
 ph ch=12 fl=0b 8003 0a00
 ph ch=12 fl=0b 8000 -
 ph ch=0 fl=03 000b 089b7f
-hu ch=10 fl=0b 8004 08001001
 hu ch=0 fl=03 000c 089b7f
 -- the car takes the screen back and gives it again
 ph ch=0 fl=03 000b 089c7f
@@ -293,16 +291,16 @@ cb video frame=3 pts=30583 202122232425262728292a2b2c2d2e2f303132333435363738393
 cb focus projected=0 reason=1
 cb focus projected=1 reason=2
 cb focus projected=1 reason=4294967295
+cb video frame=10 pts=4096 0000000141
 cb video frame=11 pts=4096 0000000141
 cb video frame=12 pts=4096 0000000141
 cb video frame=13 pts=4096 0000000141
-cb video frame=14 pts=4096 0000000141
 cb mic open=1
+cb video frame=14 pts=4096 0000000141
 cb video frame=15 pts=4096 0000000141
-cb video frame=16 pts=4096 0000000141
 cb mic open=0
 cb mic open=1
-cb video frame=17 pts=4096 0000000141
+cb video frame=16 pts=4096 0000000141
 cb mic open=0
 cb nav 8003 0801
 cb nav 8006 0a020805
@@ -375,36 +373,42 @@ ph ch=0 fl=0b 05
 ph ch=6 fl=0b 05
 ph ch=8 fl=0b 05
 ph ch=0 fl=03 000b 08897f
-hu ch=0 fl=0b 8004 08001001
-hu ch=6 fl=0b 8004 08031001
-hu ch=8 fl=0b 8004 08001001
 hu ch=0 fl=03 000c 08897f
+-- channel 38: no media there, and its start indication leaves channel 6's session alone
+ph ch=38 fl=0b 8001 0809
+ph ch=38 fl=0b 0000 000000000000000397
+ph ch=6 fl=0b 0000 000000000000000496
+ph ch=0 fl=03 000b 088a7f
+hu ch=6 fl=0b 8004 08031001
+hu ch=0 fl=03 000c 088a7f
 -- a fragment that does not decrypt: the rest of its message skipped, a whole one passes, one ack
 ph ch=6 fl=09 piece 0000000000000000002a6061
 ph ch=6 fl=08 piece 6c6d6e6f7071, its record cut over 2 frames
 ph ch=6 fl=0b 0000 000000000000000298
 ph ch=6 fl=08 piece 727374757677
 ph ch=6 fl=0a piece 62636465666768696a6b6c6d6e6f70717273
-ph ch=0 fl=03 000b 088a7f
-hu ch=6 fl=0b 8004 08031001 (x2)
-hu ch=0 fl=03 000c 088a7f
--- a second version response restarts TLS
-ph ch=0 fl=03 0002 000100060000
 ph ch=0 fl=03 000b 088b7f
-hu ch=0 fl=03 0003 <tls>
+hu ch=6 fl=0b 8004 08031001 (x2)
 hu ch=0 fl=03 000c 088b7f
--- garbage where an encrypted frame should be
-ph raw sealed garbage 060b00080102030405060708
+-- a second version response is ignored: TLS goes on
+ph ch=0 fl=03 0002 000100060000
+ph ch=6 fl=0b 0000 000000000000000397
 ph ch=0 fl=03 000b 088c7f
+hu ch=6 fl=0b 8004 08031001
 hu ch=0 fl=03 000c 088c7f
-ph shutdown
+-- garbage where an encrypted frame should be breaks TLS: the session ends
+ph raw sealed garbage 060b00080102030405060708
+ph ch=0 fl=03 000b 088d7f
 hu <closed>
+ph shutdown
 session ended=1
 cb video frame=1 pts=42 606162636465666768696a6b6c6d6e6f70717273
 cb video frame=2 pts=1 99
 cb video frame=3 pts=42 606162636465666768696a6b6c6d6e6f70717273
 cb video frame=4 pts=42 606162636465666768696a6b6c6d6e6f70717273
-cb video frame=9 pts=2 98
+cb video frame=6 pts=4 96
+cb video frame=7 pts=2 98
+cb video frame=8 pts=3 97
 cb ended
 == plain edges
 ph ch=0 fl=03 000b 08817f
@@ -443,11 +447,6 @@ ph raw header of 100 bytes, 10 sent 0603006400000000000000000000
 ph shutdown
 hu <closed>
 session ended=1
-cb focus projected=0 reason=4294967295
-cb mic open=1
-cb codec 0000000167
-cb video frame=2 pts=7 65
-cb nav 8003 0801
 cb ended (x2)
 == cut headers
 ph ch=0 fl=03 000b 08817f

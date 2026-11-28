@@ -178,12 +178,15 @@ void Guide::show(const Maneuver& m, const ClusterLanes& lanes, bool newTurn, boo
     const int direction = clusterDirection(m.type), unit = clusterUnit(m.distanceUnit);
     const std::string laneNote = !lanes.empty() || lanesChanged ? " | lanes " + describeLanes(lanes) : std::string();
     if (newTurn && isRoundabout(m.type)) {
-        ELOG(kTag, "roundabout: exit field %d, angle %s%d, cue '%s' -> exit shown %d", m.exitNumber,
-             m.hasExitAngle ? "" : "missing ", m.hasExitAngle ? static_cast<int>(m.exitAngle) : 0, m.cue.c_str(),
-             roundaboutExit(m));
+        // The cue's text names roads: only its length is logged (the log is posted by users; no positions in it).
+        ELOG(kTag, "roundabout: exit field %d, angle %s%d, cue of %u byte(s) -> exit shown %d", m.exitNumber,
+             m.hasExitAngle ? "" : "missing ", m.hasExitAngle ? static_cast<int>(m.exitAngle) : 0,
+             static_cast<unsigned>(m.cue.size()), roundaboutExit(m));
     }
-    ELOG(kTag, "%s type %d -> direction %d | %s %s | road '%s'%s", newTurn ? "SHOW" : "LANES", m.type, direction,
-         m.distanceText.c_str(), clusterUnitName(unit), m.road.c_str(), laneNote.c_str());
+    // No road name: the log is posted by users, and a street says where the driver is. Its length is enough.
+    ELOG(kTag, "%s type %d -> direction %d | %s %s | road of %u byte(s)%s", newTurn ? "SHOW" : "LANES", m.type,
+         direction, m.distanceText.c_str(), clusterUnitName(unit), static_cast<unsigned>(m.road.size()),
+         laneNote.c_str());
     const ClusterManeuver shown(direction, m.road, m.distanceText, unit, lanes);
     std::vector<Request> requests;
     LaneSection section;
@@ -287,7 +290,9 @@ void Guide::keepSection(const ClusterLanes& lanes, const LaneSection& section) {
 SendOutcome Guide::deliver(const char* what, const std::vector<Request>& requests, bool quiet) {
     std::string why;
     const SendOutcome outcome = output_.send(requests, &why);
-    sentAny_ = true;
+    // Only what reached a connection can be on the cluster: nothing to cancel after a KOMBI that cannot be reached
+    // (each cancel would retry for a minute, the arrows' thread blocked, on every try of an F-series car).
+    sentAny_ = sentAny_ || outcome != kUnreachable;
     if (outcome == kSent && !quiet) {
         ELOG(kTag, "%s: %u request(s) sent", what, static_cast<unsigned>(requests.size()));
     } else if (outcome != kSent) {
@@ -303,7 +308,9 @@ bool Guide::sendOrStop(const char* what, const std::vector<Request>& requests, b
         return true;
     }
     stop_ = outcome == kRefused ? kStoppedRefused : kStoppedLink;
-    clear(outcome == kRefused ? "KOMBI rejected a frame" : "KOMBI link failed");
+    clear(outcome == kRefused       ? "KOMBI rejected a frame"
+          : outcome == kUnreachable ? "KOMBI unreachable, nothing sent"
+                                    : "KOMBI link failed");
     return false;
 }
 

@@ -298,6 +298,14 @@ struct Pcap {
     }
 };
 
+bool isSshTcp(const uint8_t* buf, size_t cap) {
+    if (cap < 20 || (buf[0] >> 4) != 4 || buf[9] != 6) {
+        return false;
+    }
+    const size_t ihl = static_cast<size_t>(buf[0] & 15) * 4u;
+    return ihl >= 20 && ihl + 4 <= cap && (be16(buf + ihl) == 22 || be16(buf + ihl + 2) == 22);
+}
+
 int record(long seconds) {
     if (geteuid() != 0) {
         fprintf(stderr, "REFUSED: root required (read-only AF_PACKET socket)\n");
@@ -384,8 +392,7 @@ int record(long seconds) {
             continue;  // local control traffic (entry-aad, HMI)
         }
         size_t len = static_cast<size_t>(n), cap = len > sizeof(buf) ? sizeof(buf) : len;
-        if (cap >= 40 && buf[9] == 6 &&
-            (be16(buf + (buf[0] & 15) * 4) == 22 || be16(buf + (buf[0] & 15) * 4 + 2) == 22)) {
+        if (isSshTcp(buf, cap)) {
             ++sum.skipped;
             continue;  // never record the SSH session itself
         }
@@ -508,7 +515,19 @@ int selftest() {
     w.addIpv4("vbr0.73", p.data(), p.size());
     const bool optionsIgnored = w.sd.size() == 1 && w.sd.begin()->first.find("OFFER") == 0 &&
                                 w.sd.begin()->first.find(" -> ") == std::string::npos;
-    ok = ok && entriesRefused && optionsIgnored;
+    // Truncated TCP packet whose IPv4 IHL (60 B) exceeds captured length (40 B) must not read out of bounds.
+    uint8_t shortIhl[40];
+    memset(shortIhl, 0, sizeof(shortIhl));
+    shortIhl[0] = 0x4f;  // IPv4, IHL = 15 * 4 = 60 B
+    shortIhl[9] = 6;     // TCP
+    const bool ihlGuarded = !isSshTcp(shortIhl, sizeof(shortIhl));
+    uint8_t validSsh[40];
+    memset(validSsh, 0, sizeof(validSsh));
+    validSsh[0] = 0x45;
+    validSsh[9] = 6;
+    validSsh[23] = 22;
+    const bool sshDetected = isSshTcp(validSsh, sizeof(validSsh));
+    ok = ok && entriesRefused && optionsIgnored && ihlGuarded && sshDetected;
     printf(ok ? "PASS evo-capture selftest (SD offer + endpoint, 2 SOME/IP in one datagram, non-SOME/IP ignored, "
                 "wrapping SD lengths refused)\n"
               : "FAIL evo-capture selftest\n");

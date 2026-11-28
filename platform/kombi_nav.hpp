@@ -10,12 +10,14 @@
 //     or a fatal signal arrives (async-signal-safe cancel).
 //   - Fail closed: a request the cluster refuses stops the arrows until the next Android Auto session (a wrong car or a
 //     stale instance handle is refused at the first request). Five link failures in a row without an arrow do the
-//     same; otherwise the link is tried again 30 s later.
+//     same; otherwise the link is tried again 30 s after the failed send ended.
 //   - The BMW navigation wins: while it guides (the probe given to start(), a read-only D-Bus getter), the arrows stop
 //     writing without a cancel, and come back when it ends.
 //   - The marker file says an arrow may be up; it survives a SIGKILL, and the next start sends the cancel again.
 //   - The F-series cluster over MOST (kombi_most.hpp), once attached, is told when the Ethernet KOMBI took an arrow
-//     (it then stays alone) and whether the BMW navigation guides.
+//     (it then stays alone) and whether the BMW navigation guides. Once its guidance fields answered, with nothing
+//     sent to the Ethernet KOMBI, the KOMBI is not tried again until the service exits: an F-series car has none,
+//     and each try waits seconds for an address nobody answers.
 #ifndef ENTRY_AAD_PLATFORM_KOMBI_NAV_HPP
 #define ENTRY_AAD_PLATFORM_KOMBI_NAV_HPP
 
@@ -110,6 +112,9 @@ private:
     pthread_t worker_;
 
     // The worker's own
+    unsigned inboxRevision_;  // of the inbox last read
+    bool guiding_;            // what it said: a guidance with a next maneuver,
+    Maneuver next_;           // this one
     bool enabled_;
     double settingCheckedAt_;
     bool offUntilNextSession_;  // the cluster refused a request, or never answered
@@ -117,6 +122,7 @@ private:
     int linkFailures_;
     bool marked_;
     MostHud* most_;
+    bool mostOwns_;  // the MOST cluster's fields answered: the Ethernet KOMBI is not tried again this run
 
     // The BMW navigation watch, under watchMu_
     pthread_mutex_t watchMu_;

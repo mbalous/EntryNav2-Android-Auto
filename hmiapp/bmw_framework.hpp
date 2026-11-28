@@ -86,11 +86,13 @@ private:
 namespace evo {
 namespace app {
 
-// ---- tasks on the app thread ---------------------------------------------------------------------------------------
+// ---- posted tasks --------------------------------------------------------------------------------------------------
 // A bmw::Runnable of our own: BMW's vtable (offset, typeinfo, D1, D0, run) copied, destructors made no-ops, run() ours.
+// run() calls the task's function marked as a posted task: no iDrive lookup inside (posted_task.hpp).
 struct AppRunnable {
-    void** vptr;  // where a bmw::Runnable keeps its vtable pointer, and all it holds
+    void** vptr;  // where a bmw::Runnable keeps its vtable pointer, and all BMW reads of it
     void* vtbl[5];
+    void (*run)(void*);  // the task's function, given this runnable
 };
 void makeRunnable(AppRunnable& r, void (*run)(void*));
 void postRunnable(bmw::PluginApp* app, AppRunnable& r, unsigned delayMs);

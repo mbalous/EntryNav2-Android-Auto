@@ -5,7 +5,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -13,6 +12,7 @@
 
 #include "../platform/service_contract.hpp"
 #include "app_log.hpp"
+#include "guard_file.hpp"
 #include "mono_clock.hpp"
 #include "service_link.hpp"
 
@@ -25,6 +25,9 @@ const long kAutostartDelayS = 30;
 const int kBootGuardMax = 3;
 const long kBootGuardWindowS = 15 * 60;
 const int kCrashGuardMax = 3;  // starts without 2 min of uptime before the app turns itself off
+// Only loads this recent count: three short trips over days are not a crash loop, and turned the app off until someone
+// removed the file over SSH (#4).
+const long kCrashGuardWindowS = 15 * 60;
 const long kStableAfterS = 120;
 
 bool g_autostartDone = false, g_stableMarked = false;
@@ -53,34 +56,14 @@ void setSwitch(const char* what, const char* path, bool on, const char* content)
     close(fd);
 }
 
+// Both guards count on the date, not on the monotonic clock (mono_clock.hpp): the starts they count can be in
+// different runs of the unit, and that clock starts again at each.
 bool bootGuardAllows() {
-    time_t now = time(nullptr);
-    long t[8];
     int n = 0;
-    FILE* f = fopen(contract::kBootGuard, "r");
-    if (f) {
-        long v;
-        while (n < 8 && fscanf(f, "%ld", &v) == 1) {
-            if (v <= now && now - v < kBootGuardWindowS) {
-                t[n++] = v;
-            }
-        }
-        fclose(f);
-    }
-    if (n >= kBootGuardMax) {
+    if (!guardTurn(contract::kBootGuard, static_cast<long>(time(nullptr)), kBootGuardWindowS, kBootGuardMax, &n)) {
         alog("autostart SKIPPED by the bootloop guard (%d starts within %ld min): use Start in the menu", n,
              kBootGuardWindowS / 60);
         return false;
-    }
-    f = fopen(contract::kBootGuard, "w");
-    if (f) {
-        for (int i = 0; i < n; ++i) {
-            fprintf(f, "%ld\n", t[i]);
-        }
-        fprintf(f, "%ld\n", static_cast<long>(now));
-        fflush(f);
-        fsync(fileno(f));
-        fclose(f);
     }
     return true;
 }
@@ -96,31 +79,18 @@ bool appDisabled() {
 }
 
 // ---- crash guard (HMI crash loop protection) ------------------------------------------------------------------------
-// create() appends one line; 2 minutes later the status poll deletes the file. kCrashGuardMax lines = the HMI went
-// down that many times shortly after loading us: create() then refuses (iDrive starts without the app).
+// create() adds one line; 2 minutes later the status poll deletes the file. kCrashGuardMax lines of the last
+// kCrashGuardWindowS = the HMI went down that many times shortly after loading us: create() then refuses (iDrive starts
+// without the app), until those loads are older.
 bool crashGuardAllows() {
-    int lines = 0;
-    FILE* f = fopen(contract::kAppGuard, "r");
-    if (f) {
-        char b[64];
-        while (fgets(b, sizeof(b), f)) {
-            ++lines;
-        }
-        fclose(f);
-    }
-    if (lines >= kCrashGuardMax) {
+    int n = 0;
+    if (!guardTurn(contract::kAppGuard, static_cast<long>(time(nullptr)), kCrashGuardWindowS, kCrashGuardMax, &n)) {
         alog(
-            "crash guard: the HMI restarted %d times shortly after loading this app: app turned off. "
-            "Remove %s after checking the logs, then restart the unit.",
-            kCrashGuardMax, contract::kAppGuard);
+            "crash guard: the HMI restarted %d times within %ld min, each time shortly after loading this app: app "
+            "turned off. It loads again at an iDrive start once these are %ld min old; to load it at once, remove %s "
+            "after checking the logs, then restart the unit.",
+            n, kCrashGuardWindowS / 60, kCrashGuardWindowS / 60, contract::kAppGuard);
         return false;
-    }
-    f = fopen(contract::kAppGuard, "a");
-    if (f) {
-        fprintf(f, "%ld\n", static_cast<long>(time(nullptr)));
-        fflush(f);
-        fsync(fileno(f));
-        fclose(f);
     }
     return true;
 }

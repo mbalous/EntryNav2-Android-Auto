@@ -35,8 +35,10 @@
 #include "evo_gps.hpp"
 #include "evo_ilm.hpp"
 #include "evo_log.hpp"
+#include "evo_reboot.hpp"
 #include "evo_spp_snapshot.hpp"
 #include "evo_wlan.hpp"
+#include "fd_hygiene.hpp"
 #include "kept_log.hpp"
 #include "log_copy.hpp"
 #include "service_contract.hpp"
@@ -355,18 +357,23 @@ bool slotInterface(unsigned slot, std::vector<uint8_t>& cfg) {
     const uint8_t id = static_cast<uint8_t>(slot);
     return bt.start(id) && bt.readConfiguration(id, 0x6203, cfg, 2000) && cfg.size() == 1 && cfg[0] <= 1;
 }
+// What slot 5 offers a start (spp_baseline.hpp), read as the start reads it; --compat uses the same rule.
+evo::SlotOffer readSpareSlot(evo::SppSnapshotReader& reader, evo::SppSlotSnapshot& spare, bool& spareRead) {
+    spareRead = reader.read(evo::kAaSlot, spare);
+    return evo::spareSlotOffer(spareRead, spare, aaPayload());
+}
 // Slot 5 when BMW started it and nobody uses it (spp_baseline.hpp), slot 0 as before otherwise. Only reads.
 bool chooseSlot(evo::SppSnapshotReader& reader, unsigned& slotId, evo::SppSlotSnapshot& slot,
                 std::vector<uint8_t>& cfg) {
     evo::SppSlotSnapshot spare;
-    const bool spareRead = reader.read(evo::kAaSlot, spare);
+    bool spareRead = false;
+    const evo::SlotOffer offer = readSpareSlot(reader, spare, spareRead);
     if (spareRead) {
         ELOG("Supervisor", "preflight: SPP %u: state=%u transport=%u connected=%u UUID=%s", evo::kAaSlot, spare.state,
              spare.transportState, spare.connected ? 1 : 0, hex(spare.uuidPayload).c_str());
     } else {
         ELOG("Supervisor", "preflight: SPP %u unreadable: %s", evo::kAaSlot, reader.error().c_str());
     }
-    evo::SlotOffer offer = evo::spareSlotOffer(spareRead, spare, aaPayload());
     if (offer == evo::kSlotBusy) {
         ELOG("Supervisor", "preflight: SPP %u connected or already holding Android Auto: start refused for now",
              evo::kAaSlot);
@@ -405,12 +412,31 @@ bool chooseSlot(evo::SppSnapshotReader& reader, unsigned& slotId, evo::SppSlotSn
     }
     return true;
 }
+// The Alps process: among those of the user that owns org.alps.evolution on D-Bus (btmbt on the G20, where two
+// processes share the stack), else among all, as before that user was asked: on another car the stack may run under
+// another user, or D-Bus may not answer. Either way the library, its GOT and its identity are checked as always.
+// log: the step named in the log line when the user filter found nothing (null: no line).
+bool openAlps(evo::SppSnapshotReader& reader, const char* log) {
+    const int alpsUid = evo::queryAlpsServiceUid();
+    if (alpsUid >= 0 && reader.open(0, alpsUid)) {
+        return true;
+    }
+    if (log) {
+        if (alpsUid >= 0) {
+            ELOG("Supervisor", "%s: Alps library not found under D-Bus uid %d: every process scanned", log, alpsUid);
+        } else {
+            ELOG("Supervisor", "%s: Alps D-Bus service gave no user: every process scanned", log);
+        }
+    }
+    reader.close();
+    return reader.open();
+}
 bool preflight(evo::SppSnapshotReader& reader, Baseline& b) {
     if (!screenPreflight()) {
         return false;
     }
     reader.close();  // each attempt rescans Alps: with the first scan kept, a retry could never pass
-    if (!reader.open()) {
+    if (!openAlps(reader, "preflight")) {
         ELOG("Supervisor", "preflight: %s", reader.error().empty() ? "cannot open Alps" : reader.error().c_str());
         return false;
     }
@@ -456,6 +482,36 @@ const char* bluetoothLevel(const char* level, bool usb, std::string& detail) {
 void bluetoothLine(bool usb, const char* level, const char* id, std::string detail = std::string()) {
     level = bluetoothLevel(level, usb, detail);
     compatLine(level, id, detail);
+}
+// The Bluetooth points on the slot a start would take, chosen by the same rule (readSpareSlot): slot 5 while it is
+// free, slot 0 where 5 is not available. Slot 0 alone said nothing about a car where Android Auto takes 5: My BMW
+// connected on it read as a busy Bluetooth, another app's UUID there as a block.
+void compatBluetooth(evo::SppSnapshotReader& reader, bool usb) {
+    if (!openAlps(reader, nullptr)) {
+        bluetoothLine(usb, "block", "alps", reader.error());
+        return;
+    }
+    evo::SppSlotSnapshot slot;
+    bool spareRead = false;
+    const evo::SlotOffer offer = readSpareSlot(reader, slot, spareRead);
+    if (offer == evo::kSlotBusy) {
+        bluetoothLine(usb, "warn", "alps",
+                      "SPP 5 connected or still holding Android Auto: a start waits until it is free (uuid, spp not "
+                      "checked)");
+        return;
+    }
+    const unsigned slotId = offer == evo::kSlotFree ? evo::kAaSlot : evo::kAaFallbackSlot;
+    if (offer != evo::kSlotFree && !reader.read(slotId, slot)) {
+        bluetoothLine(usb, "block", "alps", reader.error());
+        return;
+    }
+    char where[16];
+    snprintf(where, sizeof(where), "SPP %u", slotId);
+    bluetoothLine(usb, slot.idle() ? "ok" : "warn", "alps", where);
+    bluetoothLine(usb, evo::baselineSupported(slot.uuidPayload) ? "ok" : "block", "uuid", hex(slot.uuidPayload));
+    // On slot 5 the stack answers slot 0's value (slotConfigurationReadable): the read shows that it answers.
+    std::vector<uint8_t> cfg;
+    bluetoothLine(usb, slotInterface(slotId, cfg) ? "ok" : "block", "spp");
 }
 // Functions found at run time (dlopen) escape the loader's own check.
 std::string missingFunctions(const char* library, const char* const* names, size_t count) {
@@ -525,7 +581,7 @@ int compatReport() {
         const bool target = ilm.validateTarget(surface, layer, display.width, display.height);
         compatLine(target ? "ok" : "block", "video", target ? panel : panel + ": layer or surface");
         if (target && !display.triedInCar()) {
-            compatLine("warn", "screen", panel + ": only 1280x480 and 800x480 have been tried in a car");
+            compatLine("warn", "screen", panel + ": only 1280x480, 800x480 and 1440x540 have been tried in a car");
         }
     }
     bool topFirst = false;
@@ -533,19 +589,7 @@ int compatReport() {
         compatLine("block", "order");
     }
     evo::SppSnapshotReader reader;
-    evo::SppSlotSnapshot slot;
-    if (!reader.open() || !reader.read(0, slot)) {
-        bluetoothLine(usb, "block", "alps", reader.error());
-    } else {
-        bluetoothLine(usb, slot.idle() ? "ok" : "warn", "alps");
-        bluetoothLine(usb, evo::baselineSupported(slot.uuidPayload) ? "ok" : "block", "uuid", hex(slot.uuidPayload));
-        evo::AlpsSppLink bt;
-        bt.setMonitorOnly(true);
-        std::vector<uint8_t> cfg;
-        const bool readable =
-            bt.start(0) && bt.readConfiguration(0, 0x6203, cfg, 2000) && cfg.size() == 1 && cfg[0] <= 1;
-        bluetoothLine(usb, readable ? "ok" : "block", "spp");
-    }
+    compatBluetooth(reader, usb);
     aa::ApInfo ap;
     std::string source;
     compatLine(evo::loadAccessPoint(ap, source) ? "ok" : "info", "hotspot");
@@ -588,6 +632,7 @@ void boundLog() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    evo::closeInheritedFds();
     setvbuf(stdout, nullptr, _IOLBF, 0);
     if (argc == 2 && !strcmp(argv[1], "--compat")) {
         return compatReport();
@@ -598,9 +643,13 @@ int main(int argc, char** argv) {
     if (argc == 2 && (!strcmp(argv[1], "--update-check") || !strcmp(argv[1], "--update-install"))) {
         return evo::updateFromUsb(!strcmp(argv[1], "--update-install"), ENTRY_AAD_VERSION);
     }
+    if (argc == 2 && !strcmp(argv[1], "--reboot")) {
+        return evo::rebootByHand();
+    }
     if (argc != 2 || (!strcmp(argv[1], "--help"))) {
         puts(
-            "Usage: aa-supervisor --service | --compat | --recover | --copy-logs | --update-check | --update-install\n"
+            "Usage: aa-supervisor --service | --compat | --recover | --copy-logs | --update-check | --update-install | "
+            "--reboot\n"
             "  --service  started by the iDrive app: wireless Android Auto with no time limit, stopped by the app or\n"
             "             STOP; the BMW hotspot switched on as Apple CarPlay does when it is off. With the file\n"
             "             /var/local/data/AA/usb: Android Auto over a USB cable, Bluetooth and Wi-Fi untouched\n"
@@ -611,7 +660,10 @@ int main(int argc, char** argv) {
             "  --update-check    what an update from the USB stick would do, changing nothing (report in\n"
             "             /var/local/data/AA/update-report.txt; exit codes: platform/update_install.hpp)\n"
             "  --update-install  installs the update signed by the project from the USB stick, then restarts the\n"
-            "             unit (Android Auto must be stopped)");
+            "             unit (Android Auto must be stopped)\n"
+            "  --reboot   a trial, with the car stopped: asks the unit's processor (Cortex-M4) over vMOST for a clean\n"
+            "             restart, as after an update; the usual restart (/sbin/reboot) when refused, unanswered or\n"
+            "             impossible. Refused (exit 1) while an update from a USB stick runs or was cut short");
         return argc == 2 ? 0 : 2;
     }
     const bool service = !strcmp(argv[1], "--service"), restore = !strcmp(argv[1], "--recover");
@@ -634,10 +686,26 @@ int main(int argc, char** argv) {
     signal(SIGHUP, stopSignal);
     signal(SIGPIPE, SIG_IGN);
     // One supervisor at a time; --compat also reads this lock to know that Android Auto is running.
+    // Brief retry on EWOULDBLOCK so a microsecond status probe cannot reject a legitimate start.
     int lock = open(evo::contract::kWirelessLock, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
     struct stat st;
-    if (lock < 0 || fstat(lock, &st) || !S_ISREG(st.st_mode) || st.st_uid != getuid() ||
-        flock(lock, LOCK_EX | LOCK_NB)) {
+    bool locked = false;
+    if (lock >= 0 && fstat(lock, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid()) {
+        for (int tries = 0; tries < 20; ++tries) {
+            if (flock(lock, LOCK_EX | LOCK_NB) == 0) {
+                locked = true;
+                break;
+            }
+            if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR) {
+                break;
+            }
+            usleep(10000);
+        }
+    }
+    if (!locked) {
+        if (lock >= 0) {
+            close(lock);
+        }
         ELOG("Supervisor", "a supervisor is already running, or its lock is invalid");
         return 1;
     }
@@ -663,7 +731,7 @@ int main(int argc, char** argv) {
     Baseline baseline;
     if (service && access(journal, F_OK) == 0) {
         // A previous service of this boot ended without a confirmed restore: finish it before anything else.
-        if (!load(baseline) || !reader.open() || !recover(baseline, reader)) {
+        if (!load(baseline) || !reader.open(baseline.pid) || !recover(baseline, reader)) {
             ELOG("Supervisor", "restore: previous restore not confirmed: service refused, journal kept");
             return 1;
         }
@@ -677,7 +745,7 @@ int main(int argc, char** argv) {
             ELOG("Supervisor", "restore: journal unreadable or invalid: nothing restored");
             return 1;
         }
-        if (!reader.open()) {
+        if (!reader.open(baseline.pid)) {
             ELOG("Supervisor", "restore: cannot open Alps: %s; journal kept", reader.error().c_str());
             return 1;
         }

@@ -156,6 +156,7 @@ private:
     static void* threadMain(void* self);
     void run();
     bool load();
+    bool dropped();
     // Reads C10 and C20 on E5.01 once, which opens vmostd's filter for the older controller protocol.
     void readOlderProtocol();
     InputMode mode_;
@@ -200,7 +201,7 @@ private:
     // popup, driving mode, menu), or the phone would keep them down. Knob thread only.
     void releaseHeldKeys(const char* why);
     bool takeHeld(uint32_t keycode);
-    uint32_t held_[8];
+    uint32_t held_[16];
     int nHeld_;
     unsigned messages_, e5_, events_, sent_, rawLogged_;
 };

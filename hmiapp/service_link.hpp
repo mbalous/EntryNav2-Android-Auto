@@ -5,7 +5,7 @@
 //
 // The supervisor borrows the car's Bluetooth, runs the service entry-aad and gives the Bluetooth back when it ends.
 // Control messages: ping, show, hide, quit, gear <n>, call <0|1>, daynight <n>, drivemode <n>, popup <0|1>.
-// Single-threaded (the app thread), but for a reaper thread per start that only waits for the supervisor and logs.
+// Single-threaded (the app thread). Children are collected at each status poll, never waited for (child_reaper.hpp).
 #ifndef ENTRY_AAD_HMIAPP_SERVICE_LINK_HPP
 #define ENTRY_AAD_HMIAPP_SERVICE_LINK_HPP
 
@@ -17,6 +17,10 @@ namespace app {
 // Starts the supervisor, unless it is missing, still running, was started less than 3 s ago, or starts are held for an
 // update.
 void launchService();
+// True while launchService() would still ignore a new start because of its 3 s debounce window.
+bool launchCoolingDown(long now);
+// Collects the supervisor and the stopped jobs that have ended, without waiting: first thing of each status poll.
+void reapChildren();
 void sendToService(const char* message);
 // The state file when its process is alive; else "connecting" while the supervisor prepares, "running" when the
 // control port answers without a state file, "idle" otherwise.

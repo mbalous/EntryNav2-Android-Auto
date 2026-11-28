@@ -21,8 +21,11 @@
 static std::atomic<int> starts(0), waits(0), listens(0), serves(0), prepared(0), sppDrops(0);
 static std::atomic<bool> fixtureLink(true), borrowed(false);
 static std::atomic<bool> phoneKeepsLink(false);  // the phone keeps its Bluetooth link after accepting the Wi-Fi
+static std::atomic<bool> bmwAppsLink(false);     // the link listened to is the BMW app's: BCL seen, link still up
 static evo::ServiceApp* instance = 0;
-static volatile sig_atomic_t quitFlag = 0;
+static std::atomic<int> quitFlag(0);
+static bool (*apStopping)(void*) = 0;  // how the access point's hostapd commands see the service's stop
+static void* apUser = 0;
 namespace evo {
 AlpsSppLink::AlpsSppLink() : p_(0) {}
 AlpsSppLink::~AlpsSppLink() {}
@@ -51,8 +54,12 @@ bool AlpsSppLink::requestSppDisconnect() {
     ++sppDrops;
     return true;
 }
-// The access point is made ready (no U-APSD) once before every handshake, never during one.
-UapsdOffer withdrawAccessPointUapsd() {
+// The access point is made ready (no U-APSD) once before every handshake, never during one, told how to see the
+// service's stop (each hostapd command may take 5 s).
+UapsdOffer withdrawAccessPointUapsd(bool (*stopping)(void*), void* user) {
+    assert(stopping && !stopping(user));
+    apStopping = stopping;
+    apUser = user;
     ++prepared;
     return UapsdOffer::kWithdrawn;
 }
@@ -80,10 +87,11 @@ bool WirelessSetup::serve(int) {
     usleep(10000);
     return fixtureLink;
 }
+// As the real one: false once the link turned out to be the BMW app's (its BCL header), the Bluetooth link still up.
 bool WirelessSetup::listen(int) {
     ++listens;
     usleep(10000);
-    return true;
+    return !bmwAppsLink;
 }
 }  // namespace aa
 static void preparing(bool value) {
@@ -284,6 +292,19 @@ int main() {
     assert(pthread_create(&thread, 0, evo::ServiceApp::wireless, &app) == 0);
     usleep(250000);
     assert(starts == 0 && listens > 0);  // the link is listened to, no handshake goes into it
+    {  // The link listened to turns out to be the BMW app's (BCL, slot 0 above all): closed, still no handshake.
+        bmwAppsLink = true;
+        assert(linkClosedWithin(2000));
+        usleep(50000);
+        pthread_mutex_lock(&app.mu);
+        assert(starts == 0 && app.sppLinks == 0 && prepared == 0);
+        pthread_mutex_unlock(&app.mu);
+        bmwAppsLink = false;
+        fixtureLink = true;  // the phone's own link comes next, listened to while the connection is prepared
+        const int listened = listens;
+        usleep(100000);
+        assert(starts == 0 && listens > listened);
+    }
     preparing(false);
     awaitStarts(1);
     int peers[2];
@@ -328,13 +349,15 @@ int main() {
         pthread_mutex_unlock(&app.mu);
         phoneKeepsLink = false;
     }
+    assert(apStopping && !apStopping(apUser));
     app.requestStop();
+    assert(apStopping(apUser));  // what the hostapd commands ask before each one
     pthread_join(thread, 0);
     pthread_mutex_lock(&app.mu);
     assert(app.wirelessDone && app.sppLinks == 4 && app.wppReply && app.wppAccepted);
     pthread_mutex_unlock(&app.mu);
     puts(
-        "PASS actual wireless loop: no handshake during TCP preparation or active session, rearmed after session stop, "
-        "Bluetooth link closed after a lost wireless session; app commands and volume through the peeks; PC socketpair "
-        "only");
+        "PASS actual wireless loop: no handshake during TCP preparation or active session, nor into the BMW app's link "
+        "found then, rearmed after session stop, Bluetooth link closed after a lost wireless session; app commands and "
+        "volume through the peeks; PC socketpair only");
 }

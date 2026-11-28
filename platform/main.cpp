@@ -30,6 +30,7 @@
 #include "tcp_server.hpp"
 #include "usb_accessory.hpp"
 #include "crash_handler.hpp"
+#include <atomic>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -38,7 +39,10 @@
 // clang-format on
 
 namespace {
-volatile sig_atomic_t quit = 0;
+// Set by the signal handler and by the iDrive app's "quit" (control thread), read by the main loop and the vMOST
+// thread. A lock-free atomic may be stored from a signal handler, and is safe between threads (a volatile is not).
+static_assert(ATOMIC_INT_LOCK_FREE == 2, "the stop flag is set from a signal handler: it must be lock-free");
+std::atomic<int> quit(0);
 void onSignal(int) {
     quit = 1;
 }
@@ -146,7 +150,7 @@ void usage(const char* argv0) {
 // The brand the iDrive app read in the car's coding (car_brand.hpp). Without the file (an older app), a BMW.
 aa::CarBrand readCarBrand() {
     aa::CarBrand brand = aa::CarBrand::kBmw;
-    FILE* f = fopen(evo::contract::kBrandFile, "r");
+    FILE* f = fopen(evo::contract::kBrandFile, "re");
     char line[16] = {0};
     const bool read = f && fgets(line, sizeof(line), f) && aa::parseCarBrand(line, brand);
     if (f) {
@@ -162,7 +166,7 @@ aa::CarBrand readCarBrand() {
 // coding that says nothing sure), left; the vehicle file's "side=" wins either way.
 aa::DriverPosition readCodedDriverSide() {
     bool right = false;
-    FILE* f = fopen(evo::contract::kDriverSideFile, "r");
+    FILE* f = fopen(evo::contract::kDriverSideFile, "re");
     char line[16] = {0};
     const bool read = f && fgets(line, sizeof(line), f) && aa::parseDriverSide(line, right);
     if (f) {
@@ -180,7 +184,7 @@ aa::DriverPosition readCodedDriverSide() {
 // app, or a coding that says nothing sure), empty: the vehicle file's model, or "iDrive".
 void readCarSeries(char* out) {
     out[0] = 0;
-    FILE* f = fopen(evo::contract::kSeriesFile, "r");
+    FILE* f = fopen(evo::contract::kSeriesFile, "re");
     char line[16] = {0};
     const bool read = f && fgets(line, sizeof(line), f) && aa::parseCarSeries(line, out);
     if (f) {
@@ -195,6 +199,10 @@ void readCarSeries(char* out) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // No closeInheritedFds() here: libxsvideo opens /dev/kmsg in its constructor, before main(), and logs its errors
+    // there; closing it would hand its number to our next socket. The supervisor, our only parent, already closed
+    // what it inherited and opens nothing without close-on-exec.
+    evo::kombi::initBmwGuidanceThreading();
     bool run = false, monitor = false, introspect = false, configure = false, video = true, service = false;
     bool usb = false;
     const char* usbPort = nullptr;
@@ -299,16 +307,24 @@ int main(int argc, char** argv) {
     if (video) {
         evo::EvoIlm ilm;
         uint32_t panelWidth = 0, panelHeight = 0;
-        if (!ilm.screenSize(panelWidth, panelHeight) || !aa::planDisplay(panelWidth, panelHeight, display)) {
+        // Wireless: never the 1920x1080 canvas. Over the car's 2.4 GHz access point, a phone asked for it closed
+        // the session at the video setup, and 1280x720 works (#180). A larger panel gets 1280x720 stretched.
+        const uint32_t largestCanvas = usb ? 3 : 2;
+        if (!ilm.screenSize(panelWidth, panelHeight) ||
+            !aa::planDisplay(panelWidth, panelHeight, display, largestCanvas)) {
             ELOG("Main", "screen size unreadable or larger than 1920x1080 (%ux%u): no picture possible", panelWidth,
                  panelHeight);
             return 1;
         }
         ELOG("Main", "screen %ux%u: the phone is asked for %ux%u%s", display.width, display.height, display.canvasWidth,
              display.canvasHeight, display.reference() ? "" : " (a size not tried on the reference car)");
+        if (display.scaled()) {
+            ELOG("Main", "wireless: its top-left %ux%u is stretched to the panel, touches scaled by %.3f",
+                 display.shownWidth, display.shownHeight, display.touchScale());
+        }
     }
     const aa::CarBrand brand = readCarBrand();
-    display.hiddenSide = aa::surroundSide(brand, display.width);
+    display.hiddenSide = aa::surroundSide(brand, display.shownWidth);
     if (display.hiddenSide) {
         ELOG("Main",
              "%s: the round surround hides %u columns on each side, the phone keeps its UI inside (%ux%u, touches "
@@ -317,7 +333,8 @@ int main(int argc, char** argv) {
              display.leftInset());
     }
     evo::ServiceApp app(kAaPort, video, &quit);
-    app.videoConfig.setDisplay(display.canvasWidth, display.canvasHeight, display.width, display.height);
+    app.videoConfig.setDisplay(display.canvasWidth, display.canvasHeight, display.width, display.height,
+                               display.shownWidth, display.shownHeight);
     app.videoConfig.holdCloseFrames = !usb;  // pairs come from the Wi-Fi's bursts, not the cable
     app.session.setDisplay(display);
     app.session.setCarMake(aa::brandName(brand));
@@ -331,7 +348,7 @@ int main(int argc, char** argv) {
     app.session.setSoftwareVersion(ENTRY_AAD_VERSION);    // the file VERSION, given by the Makefile
     // Declared after app: destroyed (and joined) before the session their callbacks post to.
     evo::EvoTouch touch;
-    touch.setPhoneDisplay(display.leftInset(), display.phoneWidth(), display.phoneHeight());
+    touch.setPhoneDisplay(display.leftInset(), display.phoneWidth(), display.phoneHeight(), display.touchScale());
     evo::EvoKnob knob;
     evo::EvoControl control;
     const bool logsKept = access(evo::contract::kMaintenance, F_OK) == 0;
@@ -368,8 +385,22 @@ int main(int argc, char** argv) {
         return 1;
     }
     evo::SppSnapshotReader alpsReader;
-    if (guarded && (!alpsReader.open() || !alpsReady(alpsReader, instance, baseline))) {
-        return 1;
+    if (guarded) {
+        unsigned long expectedAlpsPid = 0;
+        bool opened = false;
+        if (baseline.alpsPid && parseNumber(baseline.alpsPid, 0x7fffffffUL, expectedAlpsPid)) {
+            opened = alpsReader.open(static_cast<int>(expectedAlpsPid));
+        } else {
+            const int alpsUid = evo::queryAlpsServiceUid();  // as the supervisor's openAlps: that user, else all
+            opened = alpsUid >= 0 && alpsReader.open(0, alpsUid);
+            if (!opened) {
+                alpsReader.close();
+                opened = alpsReader.open();
+            }
+        }
+        if (!opened || !alpsReady(alpsReader, instance, baseline)) {
+            return 1;
+        }
     }
     if (guarded && instance != kBmwAppsSlot) {
         app.wifiLink.setAppsProbe(readAppsSlot, &alpsReader);  // same thread as the refreshes that use the reader
@@ -413,7 +444,7 @@ int main(int argc, char** argv) {
         {
             // The car's key coding, read by the iDrive app inside iDrive (controller_layout.hpp). Without it (an older
             // app), the G-style table.
-            FILE* f = fopen(evo::contract::kControllerFile, "r");
+            FILE* f = fopen(evo::contract::kControllerFile, "re");
             char line[128] = {0};
             aa::ControllerCoding coding = aa::defaultControllerCoding();
             if (f && fgets(line, sizeof(line), f) && aa::parseControllerCoding(line, coding)) {
@@ -426,7 +457,7 @@ int main(int argc, char** argv) {
             }
         }
         {
-            FILE* f = fopen(evo::contract::kDayNightFile, "r");
+            FILE* f = fopen(evo::contract::kDayNightFile, "re");
             int v = 0;  // written by the iDrive app (CDS)
             if (f) {
                 if (fscanf(f, "daynight %d", &v) == 1) {
@@ -518,6 +549,8 @@ int main(int argc, char** argv) {
     app.server.stop();  // join the accept thread before stopping its last session
     app.session.stop();
     app.video.stop();
+    app.kombi.stop();
+    evo::kombi::closeBmwGuidance();
     app.bt.stop();
     if (input != evo::INPUT_OFF) {
         touch.summary();

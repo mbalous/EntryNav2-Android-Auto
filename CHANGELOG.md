@@ -8,15 +8,55 @@ QEMU avec les bibliothèques de la voiture).
 
 ## [Non publié]
 
+## [0.13.0-rc.12] - 2026-11-27 · PC
+
+Version candidate pour le sans-fil : l'économie d'énergie U-APSD retirée aussi au téléphone qui a rejoint le
+Wi-Fi de la voiture tout seul, le fil qui lit le téléphone qui n'attend plus l'espacement des images, et une
+ligne `[WifiLink]` sans chiffre trompeur, qui dit quand la puce Wi-Fi redémarre. S'installe par clé USB depuis la
+0.13.0-rc.10. Testée sur PC et sous QEMU, **pas encore essayée en voiture**.
+
+### Corrigé
+
+- Sans-fil : un téléphone déjà sur le Wi-Fi de la voiture quand Android Auto démarre (réseau connu rejoint tout seul, téléphone revenu après une séance perdue) gardait l'économie d'énergie U-APSD toute la séance : le point d'accès ne reconstruisait sa balise sans U-APSD que si personne n'y était connecté. Sur une F52, c'était le cas des quatre séances sur quatre ([#203](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/203)). La balise est maintenant reconstruite une fois par démarrage du point d'accès, même avec un appareil connecté : il est déconnecté une fois et rejoint aussitôt le Wi-Fi sans U-APSD, juste avant que le téléphone reçoive sa demande de démarrage. Un autre appareil sur ce Wi-Fi (ordinateur, iPhone en CarPlay) est déconnecté une fois aussi. U-APSD retiré a fait disparaître les à-coups sur une X1 F48 ([#138](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/138)) ; il n'est pas la seule cause de lenteur sans fil. Testé sur PC.
+- Journaux : la ligne `[WifiLink]` écrivait `0 retried` sur toutes les voitures, ce qui laissait croire que la puce Wi-Fi n'avait jamais à réémettre. Son pilote ne donne pas ce nombre (une seule tentative par trame, « no data about retries » dans son code) : il n'est plus écrit. La ligne dit à la place quand le pilote a redémarré le micrologiciel de la puce (`chip firmware restarted`), lu dans son état, sans rien demander à la puce, sur un fil à part : la boucle principale n'attend jamais le pilote plus de 200 ms. Les statistiques de la puce elle-même (réémissions, économie d'énergie du téléphone) ne sont pas lues : le pilote les demande à la puce, et sur une X1 F48 deux lectures à 5 s d'écart ont été suivies de deux redémarrages de son micrologiciel ([#256](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/256), [#203](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/203)). Testé sur PC.
+- Sans-fil : les images qui arrivent par paires sont toujours espacées avant d'aller au décodeur, mais le fil qui lit
+  le téléphone n'attend plus cet espacement. Ses accusés de réception et ses réponses aux pings du téléphone ne
+  prennent donc plus jusqu'à 25 ms de retard par image retenue pendant les rafales d'images. En sans-fil, les images
+  vont maintenant au décodeur par un seul fil, réservé à cela, dans leur ordre et chacune à son heure ; l'image
+  retenue attend dans sa mémoire vidéo. Le fil qui lit le téléphone n'attend plus que lorsque les mémoires vidéo du
+  décodeur sont toutes prises (rafale plus longue qu'elles), le temps qu'une se libère, comme avant. Le mode USB ne
+  change pas. Testé sur PC.
+
+## [0.13.0-rc.11] - 2026-11-26 · PC
+
+Version candidate avant la 1.0. Elle reprend la relecture complète du code (audit du 25/11), la tête haute des
+Série F apprise de la navigation BMW, le redémarrage propre après une mise à jour par clé USB, et les retours du
+25-26/11 : plus de plantage du service à l'arrêt de la voiture, Android Auto qui revient après OPTION puis BACK,
+plus de nom de rue ni d'adresse Wi-Fi dans les journaux. S'installe par clé USB depuis la 0.13.0-rc.10. Testée
+sur PC et sous QEMU, **pas encore essayée en voiture**.
+
 ### Ajouté
 
 - Traduction polonaise du menu Android Auto de l'iDrive, affichée quand l'iDrive est en polonais (au lieu de
   l'anglais). Comme les autres langues, les textes restent en ASCII, sans lettres accentuées (« laczenie » pour
-  « łączenie ») ([#176](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/176), essayée sur une F44). Testé sur PC.
+  « łączenie ») ([#176](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/176), essayée sur une F44 ; textes de la
+  mise à jour par clé USB : [#185](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/185)). Testé sur PC.
 - Traduction italienne du menu Android Auto de l'iDrive ([#77](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/77)). Testé sur PC.
+- Après une mise à jour par clé USB, l'unité demande maintenant un redémarrage propre au processeur de l'unité, comme
+  un outil de diagnostic BMW, au lieu du redémarrage qui laissait l'écran noir environ 3 minutes. S'il refuse, ne
+  répond pas ou ne peut pas être joint, c'est le redémarrage d'avant. Le même à la main, voiture à l'arrêt :
+  `aa-supervisor --reboot` ([maintenance](docs/MAINTENANCE.md#redémarrer-lunité-essai)). Testé sur PC, pas encore
+  en voiture.
 
 ### Corrigé
 
+- Sans-fil sur les écrans plus larges que 1280 pixels (10,25 pouces, 1440x540) : le service demandait au téléphone une
+  image de 1920x1080, et le téléphone fermait la séance dès la mise en place de la vidéo, sur le Wi-Fi 2,4 GHz de la
+  voiture. En sans-fil, il demande maintenant 1280x720 au plus : sur un écran plus large, le haut de l'image
+  (1280x480) est étiré à tout l'écran, dans les mêmes proportions, et le toucher est ramené aux pixels de l'image. Par
+  câble, rien ne change (1920x1080), ni sur les écrans de 1280 pixels ou moins
+  ([#190](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/190), essayé sans fil sur une F52 : image sur tout
+  l'écran, toucher juste). Testé sur PC.
 - Son : les demandes de focus audio du téléphone sont décodées comme des messages protobuf, même si leurs champs
   arrivent dans un autre ordre ou si leur valeur occupe plusieurs octets ([#121](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/121)). Testé sur PC.
 - Image : une demande de focus de la voiture arrivée avant la mise en place de la vidéo est désormais envoyée dès que
@@ -25,6 +65,171 @@ QEMU avec les bibliothèques de la voiture).
 - Sans-fil : au démarrage, quand la pile Bluetooth de la voiture répondait « occupée » (statut 4) au renouvellement
   de l'annonce d'Android Auto, le service s'arrêtait et rendait le Bluetooth. Il attend maintenant le renouvellement
   suivant ([#97](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/97), X1 F48, où la pile reste occupée près d'une minute au démarrage). Testé sur PC.
+- Contrôle de compatibilité : un écran 1440x540 n'est plus signalé `@warn|screen|` comme jamais essayé en voiture. Il
+  a marché sur une F52, par câble et sans fil ([#190](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/190)) ; l'avertissement reste pour les autres tailles.
+  Testé sur PC.
+- Radio FM : en roulant, l'iDrive remonte lui-même sa page radio quand le tuner suit la station sur une autre
+  fréquence, et Android Auto lui cédait la place comme après une touche (X1 F48, jusqu'à une vingtaine de fois par
+  trajet). Sans touche laissée à l'iDrive dans les 6 secondes d'avant, l'iDrive est maintenant remis tout de suite
+  sur la page vide d'Android Auto, au plus 4 fois en 10 s. Seulement pour cette page (écran 523, vu dans le journal
+  de la voiture) : un autre écran que l'iDrive ouvre sans touche fait toujours céder la place à Android Auto
+  ([#138](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/138), d'après l'idée de [#139](https://github.com/Jiraiya43/EntryNav2-Android-Auto/pull/139)). Testé sur PC.
+- Appli iDrive : quand la copie des journaux ou la vérification d'une mise à jour dépassait son délai (clé USB
+  retirée ou défectueuse), l'appli attendait la fin du programme arrêté sur le fil de l'iDrive, qui pouvait geler
+  tant que le noyau retenait ce programme. Les programmes lancés par l'appli sont maintenant récoltés à chaque tour
+  de son état, sans jamais attendre ; le fil d'attente qui suivait le superviseur disparaît aussi. Testé sur PC.
+- Appli iDrive : avant de remplacer des fonctions de son objet dans l'iDrive (début, erreur, fin), ou d'appeler
+  celles qui lisent le codage de la voiture, l'appli vérifie qu'elles sont bien à l'endroit attendu. Sur une autre version du logiciel iDrive où elles auraient bougé, elle ne
+  se crée pas (l'iDrive démarre sans elle, son journal dit pourquoi), ou ne lit pas le codage (touches de Série G,
+  BMW), au lieu de risquer de le faire planter. Testé sur PC.
+- Sans-fil : pendant une séance Android Auto, un lien Bluetooth qui s'ouvrait et se révélait être celui de l'appli
+  My BMW (BMW Apps) pouvait recevoir la demande de démarrage sans fil d'Android Auto, surtout sur les voitures où
+  Android Auto partage l'emplacement Bluetooth des BMW Apps. Ce lien est maintenant laissé à My BMW sans rien y
+  écrire, comme hors séance. Testé sur PC.
+- Arrêt d'Android Auto sans fil : quand le point d'accès Wi-Fi de la voiture ne répondait plus, l'arrêt pouvait
+  attendre jusqu'à 15 s ses réglages, et le superviseur arrêtait alors le service de force au bout de 10 s, sans son
+  arrêt propre. Plus aucun réglage n'est demandé au point d'accès une fois l'arrêt demandé : l'arrêt n'attend que celui
+  en cours, 5 s au plus. Testé sur PC.
+- Sans-fil : un téléphone qui rouvrait son lien Bluetooth très vite (0,1 s après l'avoir fermé, comme après une
+  séance perdue) pendant que le service finissait de fermer l'ancien n'était plus entendu : ses messages étaient
+  jetés, et Android Auto ne revenait qu'à sa connexion suivante, ou après un Arrêter/Démarrer. Le nouveau lien
+  s'ouvre maintenant dès que l'ancien est fermé, avec ce que le téléphone a déjà envoyé. Testé sur PC.
+- Contrôle de compatibilité : le Bluetooth était lu sur l'emplacement des BMW Apps (0) seulement, alors qu'Android
+  Auto prend d'abord le 5. Avec My BMW connecté, le contrôle disait le Bluetooth occupé (`@warn|alps|`), et
+  l'identifiant d'une autre appli sur le 0 pouvait le bloquer (`@block|uuid|`) sans rapport avec Android Auto. Il lit
+  maintenant l'emplacement qu'un démarrage prendrait, choisi de la même façon, et le nomme (`@ok|alps|SPP 5`). Testé
+  sur PC.
+- Appli iDrive : la fenêtre vide que l'appli ouvre un instant pour ramener l'iDrive sur la page d'Android Auto
+  pouvait rester ouverte quand l'iDrive y revenait de lui-même juste avant, et l'appli la prenait alors pour une
+  fenêtre de l'iDrive : Android Auto se retirait derrière une fenêtre vide que rien ne refermait. Elle est refermée
+  dès que la page vide ou le menu de l'appli revient, qu'Android Auto est ramené à l'écran, ou qu'un appel ou la
+  caméra arrive, et n'est plus jamais prise pour une fenêtre de l'iDrive. Testé sur PC.
+- Appli iDrive : quand la date de la voiture reculait (réglée par le GPS) après une touche, l'appli croyait cette
+  touche toute récente aussi longtemps que la date restait en retard : Android Auto restait à l'écran après une
+  touche qui devait le faire céder la place, ou cédait la place à la page radio que l'iDrive remonte seul. Une
+  touche datée après l'heure actuelle ne compte plus comme récente. Après 24,8 jours de marche de l'unité sans
+  redémarrage, son horloge en millisecondes débordait aussi : BACK vers le menu de l'appli ne ramenait plus la page
+  d'Android Auto tout de suite. Testé sur PC.
+- Appli iDrive : le garde-fou contre les plantages comptait chaque démarrage de l'iDrive arrêté en moins de 2 minutes,
+  quel que soit son âge. Trois trajets très courts, même à plusieurs jours d'écart, éteignaient l'appli (et son menu)
+  jusqu'à une intervention en SSH. Seuls les démarrages des 15 dernières minutes comptent maintenant, comme pour le
+  démarrage automatique, et l'appli revient d'elle-même ensuite ; les fichiers des deux garde-fous ne peuvent plus
+  rester à moitié écrits après une coupure de courant ([#4](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/4)).
+  Testé sur PC.
+- Mise à jour par clé USB : quand elle s'arrêtait sans rien installer pendant qu'Android Auto s'arrêtait pour elle
+  (un appel ou la marche arrière arrivés entre-temps, ou un arrêt trop long), Android Auto devait repartir, mais la
+  relance était demandée trop tôt, refusée, et Android Auto restait arrêté sans rien dire. Il repart maintenant une
+  fois complètement arrêté ; Démarrer ou Arrêter dans le menu entre-temps annule cette relance, et s'il n'est
+  toujours pas arrêté 45 s plus tard, le journal le dit. Testé sur PC.
+- Toucher : le service reconnaissait l'écran tactile au premier paquet reçu sur son port, quel qu'il soit. Un paquet
+  venu d'ailleurs, par exemple d'un téléphone sur le Wi-Fi de la voiture, pouvait le lui faire ignorer pour toute la
+  séance. L'écran est maintenant reconnu à sa première trame de toucher, arrivée par le réseau filaire de l'unité,
+  jamais par le Wi-Fi. Testé sur PC.
+- Image : le fil qui lit les messages du décodeur vidéo de la voiture ne regardait pas si leur file était encore
+  ouverte. Si le décodeur la fermait, chaque lecture revenait aussitôt sans rien, et ce fil occupait un cœur du
+  processeur à 100 % jusqu'à la fin de la séance. Il s'arrête maintenant ; sans ces messages, aucun tampon ne revient,
+  et la séance se termine comme pour un décodeur bloqué. Testé sur PC.
+- Image : une configuration vidéo du téléphone beaucoup plus grosse qu'une vraie (qui tient en quelques dizaines
+  d'octets) était gardée et placée devant chaque image clé ; quand l'ensemble ne tenait plus dans le tampon du
+  décodeur, toutes les images clés étaient perdues tant qu'elle restait. Une configuration de plus de 4 Kio est
+  maintenant refusée, et la précédente reste. Testé sur PC.
+- Flèches au compteur : sans compteur sur le réseau Ethernet (Série F, où le compteur passe par MOST), chaque essai
+  d'envoi de flèche finissait par une annulation tentée pendant une minute, alors que rien n'avait pu partir :
+  jusqu'à plusieurs minutes d'essais de connexion inutiles par séance. Une annulation n'est plus tentée que si
+  quelque chose a vraiment été envoyé au compteur. Testé sur PC.
+- Flèches au compteur et à la tête haute : une distance du téléphone qui n'était pas un nombre (« inf », « nan »),
+  négative ou démesurée partait telle quelle, ou donnait au compteur une position calculée au hasard. Une telle
+  distance compte maintenant comme absente : le compteur affiche la distance tirée des mètres, sinon « - ». Un texte
+  court n'est plus affiché tel quel que s'il est fait de chiffres (« 0.3 », « 1,5 »), et un nom de rue qui n'est pas
+  de l'UTF-8 valide n'arrive plus au compteur en caractères invalides. Testé sur PC.
+- Flèches au compteur : les messages de navigation du téléphone étaient gardés entiers (jusqu'à 8 Mio chacun) et
+  recopiés puis relus quatre fois par seconde, par le fil des flèches Ethernet comme par celui du compteur MOST.
+  Seuls leurs premiers 32 Kio sont maintenant gardés (une étape en prend quelques centaines d'octets), au plus 16
+  voies et 16 directions par voie sont lues, et les messages ne sont recopiés et relus que quand un nouveau est
+  arrivé. Testé sur PC.
+- Câble USB : un téléphone qui acceptait la demande de passer en mode accessoire sans jamais le faire était
+  sollicité à nouveau toutes les 5 à 6 secondes, sans fin. Après 5 demandes restées sans suite, il est maintenant
+  laissé tranquille jusqu'à ce qu'il soit débranché puis rebranché, et le journal le dit. Testé sur PC.
+- Séance Android Auto : les messages en morceaux en cours d'assemblage gardent au plus 12 Mio pour tous les canaux
+  ensemble (8 Mio par message, comme avant), et un message annoncé plus grand que 8 Mio est écarté dès son premier
+  morceau. Un appareil qui ouvrait un message sur chacun des 256 canaux pouvait faire garder plus de 2 Gio au service
+  et le faire planter. Testé sur PC.
+- Séance Android Auto : un message trop court pour porter son numéro est écarté, au lieu d'être pris pour une image
+  ou du son et accusé, même sur le canal de commande. Images et son ne sont plus attendus que sur les canaux vidéo et
+  audio que la voiture annonce au téléphone ; un autre canal ne peut plus changer le numéro de flux qu'Android Auto
+  attend dans les accusés de l'image. Testé sur PC.
+- Séance Android Auto : les morceaux d'un même message doivent être tous chiffrés ou tous en clair, sinon le message
+  est écarté ; une deuxième réponse de version du téléphone ne relance plus la négociation sécurisée (TLS) en cours
+  de séance. Une fois la séance sécurisée, un message reçu en clair, autre qu'un ping, est encore traité comme avant,
+  mais le journal du service le note (une fois par sorte de message), pour savoir si de vrais téléphones en envoient
+  avant de les refuser. Testé sur PC.
+- Séance Android Auto : quand la négociation sécurisée (TLS) avec le téléphone échoue, la séance se termine tout de
+  suite, au lieu d'attendre 5 secondes de silence du téléphone. Un message de négociation reçu une fois la séance
+  sécurisée est ignoré, au lieu de casser la séance au message suivant ; un message de négociation de plus de 64 Kio
+  est refusé. Testé sur PC.
+- Séance Android Auto : quand le téléphone ferme la liaison sécurisée (TLS), ou qu'un enregistrement abîmé suit un
+  message lisible dans la même trame, la séance se termine à cette trame, au lieu de continuer jusqu'à la trame
+  chiffrée suivante ou jusqu'à 5 secondes de silence. Testé sur PC.
+- Séance Android Auto : une connexion qui n'a pas fini la négociation sécurisée (TLS) 10 secondes après son ouverture
+  est fermée. Un appareil du Wi-Fi de la voiture qui envoyait de temps en temps une trame vide sans jamais négocier
+  gardait la seule place de séance, et le téléphone ne pouvait plus se connecter. La négociation du téléphone
+  précédent ne compte plus pour la connexion suivante. Testé sur PC.
+- Séance Android Auto : la liaison sécurisée (TLS) ne propose jamais de compression, et une trame qui donnerait plus
+  de 8 Mio une fois déchiffrée termine la séance. Aucun téléphone ne se sert de l'une ni ne fait l'autre : pour eux,
+  rien ne change. Testé sur PC.
+- Séance Android Auto : avant la fin de la négociation sécurisée (TLS), seuls les messages de la poignée de main
+  passent en clair (version, TLS, ping, au revoir), 64 Kio au plus ; tout autre message est refusé et noté une fois.
+  La liaison TLS n'accepte plus de renégociation demandée par le téléphone, ne propose plus de chiffrements anciens
+  et libère sa mémoire à la fin de chaque séance. Testé sur PC.
+- Séance Android Auto : la connexion du téléphone est lue par blocs (moins d'appels au système par image), le toucher
+  et la molette restant prioritaires. Testé sur PC.
+- Sans-fil : l'écoute du téléphone ne s'ouvre plus sur toutes les interfaces quand l'adresse du point d'accès est
+  illisible, et ses connexions ne passent plus aux programmes lancés par le service. Testé sur PC.
+- Sans-fil : l'échange Bluetooth avec le téléphone respecte ses délais même quand le téléphone envoie au compte-gouttes
+  ou ne lit plus ; le gestionnaire de plantage du service est plus sûr. Testé sur PC.
+- Appli iDrive : l'arrêt d'Android Auto vérifie qu'un numéro de processus est bien celui du superviseur ou du service
+  avant de l'arrêter ; les fichiers de l'appli et du service ne suivent plus de lien symbolique. Testé sur PC.
+- Appli iDrive : un service relancé entre deux sondages reçoit de nouveau l'état de la voiture (marche arrière, appel,
+  aide au stationnement), une relance demandée juste après un lancement n'est plus perdue, et une erreur dans un rappel
+  de l'iDrive ne remonte plus dans l'iDrive. Testé sur PC.
+- Toucher : un pincement interrompu par une fenêtre de l'iDrive ou la marche arrière, ou par l'arrêt d'Android Auto,
+  se termine bien côté téléphone (plus de doigt resté appuyé). Micro, pastille du volume, molette et GPS plus robustes.
+  Testé sur PC.
+- Sans-fil : un petit programme lancé par le service (réglage du point d'accès avant chaque connexion) recevait une
+  copie de la connexion du téléphone et du port d'Android Auto. Si le service rouvrait son port pendant ce temps, il
+  ne pouvait plus le prendre et le téléphone n'était plus accepté jusqu'au redémarrage, comme l'a vu un autre projet
+  en voiture. Ces connexions ne passent plus aux programmes lancés. Testé sur PC.
+- Appli iDrive : un autre projet a vu l'iDrive se bloquer puis l'unité redémarrer quand son appli lisait un service
+  de l'iDrive depuis une tâche différée. Chez nous ces lectures (codage, réglage de la fenêtre du mode de conduite) ne
+  se font qu'au démarrage de l'appli et à un changement de mode ; elles sont maintenant refusées dans une tâche
+  différée, pour qu'un ajout futur ne puisse pas refaire cette erreur. Rien ne change en voiture. Testé sur PC.
+- Flèches au compteur des Série F par MOST : quand le compteur ne répond pas aux champs connus (ceux du compteur 6WA),
+  rien n'était dessiné ([#88](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/88), MINI F56 : aucune des six
+  tailles lues). Le service apprend maintenant les champs du compteur en écoutant la navigation BMW pendant un guidage,
+  et les garde dans le fichier `kombi-most-layout` : un seul guidage BMW suffit, Android Auto les utilise ensuite. Sans
+  rien envoyer au compteur pendant ce guidage, sans jamais garder ni écrire dans le journal le nom d'une rue. Le
+  journal résume ce que la navigation fait de chaque champ, et dit une fois chaque réponse du compteur qui ne se
+  rattache à rien (une lecture de taille refusée, par exemple). Testé sur PC, pas encore en voiture.
+- Journaux : le journal du service n'écrit plus le nom des rues du guidage d'Android Auto (ni dans les lignes des
+  flèches au compteur, ni dans les octets des messages de navigation du téléphone), seulement leur longueur. Ce
+  journal est souvent publié dans les tickets, et une rue dit où se trouve le conducteur. Testé sur PC.
+- Appli iDrive : après OPTION puis BACK (ou l'inclinaison à gauche), Android Auto revient de lui-même au lieu d'une
+  page vide ([#137](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/137), MINI F54 ; même logiciel que
+  les BMW). L'iDrive ignorait la demande du menu de l'appli tant que son panneau d'options était ouvert, et rien ne
+  ramenait l'image une fois le panneau fermé : il fallait un second BACK puis *Ouvrir Android Auto*. Un choix dans
+  le panneau laisse Android Auto en retrait comme avant ; téléphone parti entre-temps : le menu de l'appli. Testé
+  sur PC.
+- Flèches au compteur des Série F (MOST) : une fois les champs du compteur trouvés, le service n'essaie plus le
+  compteur Ethernet des Série G, qui faisait attendre quelques secondes à chaque essai ; et la ligne de journal de la
+  première image ne fait plus croire à une panne quand la flèche s'affiche
+  ([#79](https://github.com/Jiraiya43/EntryNav2-Android-Auto/issues/79)). Testé sur PC.
+- Journaux : l'échange Bluetooth avec le téléphone n'écrit plus le nom ni l'adresse (BSSID) du Wi-Fi de la voiture
+  dans le journal du service, seulement s'ils sont là : ces journaux sont publiés dans les tickets. Testé sur PC.
+- Arrêt de la voiture : le service ne plante plus quand le service vMOST de la voiture s'arrête en premier
+  (`free(): invalid pointer`, vu dans des journaux de la 0.13.0-rc.10). La bibliothèque vMOST de la voiture coupe
+  elle-même sa connexion après une lecture ou un envoi raté, et une deuxième coupure la faisait planter : la molette,
+  les flèches au compteur des Série F, la demande du point d'accès Wi-Fi et le redémarrage propre ne la coupent plus
+  une deuxième fois. Testé sur PC.
 
 ## [0.13.0-rc.10] - 2026-11-24 · PC
 

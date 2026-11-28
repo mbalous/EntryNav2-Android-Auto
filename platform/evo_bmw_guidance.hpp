@@ -9,9 +9,13 @@
 namespace evo {
 namespace kombi {
 
+// Initializes libdbus thread locking once (safe to call from main() before spawning threads).
+void initBmwGuidanceThreading();
 // 1 = BMW guidance active, 0 = not active, -1 = unknown (bus or navigation not available).
 // May block up to 1.5 s. Call from one thread only; reconnects by itself.
 int probeBmwGuidance();
+// Closes the private D-Bus connection on shutdown (call after the watcher thread has stopped).
+void closeBmwGuidance();
 // Host tests: another D-Bus address than the car's session bus.
 void setGuidanceBusForTest(const char* address);
 

@@ -31,7 +31,8 @@ struct Session {
     VmostClient vmost;
     WlanRequestResult* r;
     bool sent, gotState, final;
-    explicit Session(WlanRequestResult* result) : r(result), sent(false), gotState(false), final(false) {}
+    bool lost;  // vmostd hung up, or the library dropped the connection: nothing more asked, only let go
+    explicit Session(WlanRequestResult* result) : r(result), sent(false), gotState(false), final(false), lost(false) {}
 };
 
 uint32_t nowMs() {
@@ -72,7 +73,7 @@ void onMessage(void* msg, void* user) {
 // Process vmostd messages until done() or the deadline.
 void pump(Session& s, int fd, unsigned ms, bool (*done)(const Session&)) {
     const uint32_t end = nowMs() + ms;
-    while (!done(s) && static_cast<int32_t>(end - nowMs()) > 0) {
+    while (!s.lost && !done(s) && static_cast<int32_t>(end - nowMs()) > 0) {
         struct pollfd p;
         p.fd = fd;
         p.events = POLLIN;
@@ -82,9 +83,13 @@ void pump(Session& s, int fd, unsigned ms, bool (*done)(const Session&)) {
             break;
         }
         if (r > 0 && (p.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+            ELOG("Hotspot", "vmostd closed the connection");
+            s.lost = true;
             break;
         }
         if (r > 0 && (p.revents & POLLIN) && s.vmost.processMessages() != 0) {
+            ELOG("Hotspot", "vMOST reading interrupted: the library closed the connection");
+            s.lost = true;
             break;
         }
     }
@@ -143,6 +148,7 @@ bool requestWlanAccessPoint(unsigned waitMs, WlanRequestResult* result) {
     VmostMsgOut m;
     buildVmostGet(m, kWlanFblock, kWlanApInstance, kWlanState3, dummy);  // read-only: current hotspot state
     rc = v.send(&m);
+    s.lost = !v.linked();  // a failed write: the library dropped the connection itself
     ELOG("Hotspot", "read WLANState3 (A0.01.C10 Get): %s (%d)", rc == 0 ? "sent" : "refused", rc);
     if (rc == 0) {
         pump(s, fd, 1000, haveState);
@@ -151,6 +157,8 @@ bool requestWlanAccessPoint(unsigned waitMs, WlanRequestResult* result) {
     if (r.stateBefore == 1) {
         ELOG("Hotspot", "wland already reports the hotspot on (state 1): nothing sent");
         ok = true;
+    } else if (s.lost) {
+        ELOG("Hotspot", "the vMOST connection is gone: hotspot not requested");
     } else {
         uint8_t payload[3];
         buildSelectWlanState3(payload, kSenderHandle, true);
@@ -164,6 +172,7 @@ bool requestWlanAccessPoint(unsigned waitMs, WlanRequestResult* result) {
         m.data = payload;
         m.channel = 0;
         rc = v.send(&m);
+        s.lost = !v.linked();
         r.sent = rc == 0;
         s.sent = r.sent;
         s.gotState = false;
@@ -181,8 +190,10 @@ bool requestWlanAccessPoint(unsigned waitMs, WlanRequestResult* result) {
         ELOG("Hotspot", "request done: reply op %d, state after %d, %u wland message(s)", r.replyOp, r.stateAfter,
              r.messages);
     }
-    v.shadowDeregister(kWlanFblock, kWlanApInstance);
-    v.disconnect();
+    if (!s.lost) {  // a deregistration on a lost connection would only fail, and make the library disconnect
+        v.shadowDeregister(kWlanFblock, kWlanApInstance);
+    }
+    v.disconnect();  // once, and not after the library's own (vmost_client.hpp)
     v.unload();
     return ok;
 }

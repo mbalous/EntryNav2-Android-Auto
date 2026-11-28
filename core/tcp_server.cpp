@@ -6,7 +6,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <sys/select.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -63,6 +63,9 @@ sockaddr_in anyAddress(uint16_t port) {
 
 TcpServer::TcpServer(uint16_t port)
     : port_(port),
+      hasHotspot_(false),
+      hotspotValid_(false),
+      hotspotAddr_(0),
       callback_(nullptr),
       user_(nullptr),
       thread_(0),
@@ -82,10 +85,33 @@ void TcpServer::setConnectionCallback(ClientConnectedCallback callback, void* us
     user_ = user_data;
 }
 
-// The hotspot address when it can be bound, so that nobody on another interface can open a session. It is often not
-// up yet at start: then every interface, and run() filters the phones.
+void TcpServer::setHotspotAddress(const std::string& ip) {
+    hotspot_ = ip;
+    hasHotspot_ = !ip.empty();
+    hotspotValid_ = false;
+    hotspotAddr_ = 0;
+    if (hasHotspot_) {
+        in_addr parsed;
+        if (inet_pton(AF_INET, ip.c_str(), &parsed) == 1) {
+            hotspotValid_ = true;
+            hotspotAddr_ = parsed.s_addr;
+        }
+    }
+}
+
+// The hotspot address when it can be bound (directly or via IP_FREEBIND if wlan0 is not up yet), so nobody on another
+// interface can open a session. Non-empty invalid hotspot fails closed; fallback to INADDR_ANY still filters peers.
+// Close-on-exec, the listener and every phone it accepts: the service starts short programs from several threads
+// (hostapd_cli before each Wi-Fi exchange, LayerManagerControl; platform/evo_process.hpp). One that inherited the
+// listener keeps the port bound after we close it, so a new listener fails to bind and the phone's connections land
+// on a socket nobody accepts from; one that inherited a phone's socket keeps that connection open after the session
+// closed it. Another project lost its phones until a restart that way.
 int TcpServer::bindListener() {
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (hasHotspot_ && !hotspotValid_) {
+        printf("[TcpServer] refusing invalid hotspot address '%s'\n", hotspot_.c_str());
+        return -1;
+    }
+    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         perror("[TcpServer] socket creation failed");
         return -1;
@@ -93,14 +119,19 @@ int TcpServer::bindListener() {
     setOption(fd, SOL_SOCKET, SO_REUSEADDR, 1);
     sockaddr_in address = anyAddress(port_);
     bool bound = false;
-    if (!hotspot_.empty()) {
-        bound = inet_aton(hotspot_.c_str(), &address.sin_addr) &&
-                bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+    if (hasHotspot_) {
+        address.sin_addr.s_addr = hotspotAddr_;
+        bound = bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+#ifdef IP_FREEBIND
+        if (!bound && errno == EADDRNOTAVAIL && setOption(fd, IPPROTO_IP, IP_FREEBIND, 1)) {
+            bound = bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+        }
+#endif
         if (bound) {
             printf("[TcpServer] listening on %s:%u\n", hotspot_.c_str(), static_cast<unsigned>(port_));
         } else {
-            printf("[TcpServer] could not bind %s:%u (%s); listening on all interfaces\n", hotspot_.c_str(),
-                   static_cast<unsigned>(port_), strerror(errno));
+            printf("[TcpServer] could not bind %s:%u (%s); listening on all interfaces (hotspot filter on)\n",
+                   hotspot_.c_str(), static_cast<unsigned>(port_), strerror(errno));
             address = anyAddress(port_);
         }
     }
@@ -181,11 +212,25 @@ void* TcpServer::threadMain(void* self) {
 }
 
 bool TcpServer::fromHotspot(uint32_t address) const {
-    const in_addr_t hotspot = hotspot_.empty() ? INADDR_NONE : inet_addr(hotspot_.c_str());
-    return hotspot == INADDR_NONE || (ntohl(address) & kSubnetMask) == (ntohl(hotspot) & kSubnetMask);
+    if (!hasHotspot_) {
+        return true;
+    }
+    if (!hotspotValid_) {
+        return false;
+    }
+    const uint32_t peerHost = ntohl(address);
+    const uint32_t hotspotHost = ntohl(hotspotAddr_);
+    if ((peerHost & kSubnetMask) != (hotspotHost & kSubnetMask)) {
+        return false;
+    }
+    // Outside loopback (used by PC tests), the head unit's own hotspot IP is never a phone.
+    if ((hotspotHost >> 24) != 127 && address == hotspotAddr_) {
+        return false;
+    }
+    return true;
 }
 
-// select() with a 1 s timeout rather than a blocking accept(), so that stop() never waits for a phone.
+// poll() with a 1 s timeout + non-blocking accept4(), so stop() never waits on a half-open connection.
 void TcpServer::run() {
     while (running_) {
         const int fd = listener_;
@@ -197,18 +242,16 @@ void TcpServer::run() {
             }
             continue;
         }
-        fd_set readable;
-        FD_ZERO(&readable);
-        FD_SET(fd, &readable);
-        timeval wait;
-        wait.tv_sec = 1;
-        wait.tv_usec = 0;
-        const int ready = select(fd + 1, &readable, nullptr, nullptr, &wait);
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        const int ready = poll(&pfd, 1, 1000);
         if (ready <= 0) {
             if (ready < 0 && errno != EINTR && running_) {
                 lastError_ = errno;
                 if (++failures_ == 1) {
-                    printf("[TcpServer] select() on the listener failed: %s\n", strerror(errno));
+                    printf("[TcpServer] poll() on the listener failed: %s\n", strerror(errno));
                 }
                 // A listener that keeps failing (the car's Wi-Fi switched off under it) would never accept again.
                 if (failures_ >= kFailuresBeforeRelisten) {
@@ -222,12 +265,12 @@ void TcpServer::run() {
 
         sockaddr_in peer;
         socklen_t peerSize = sizeof(peer);
-        const int phone = accept(fd, reinterpret_cast<sockaddr*>(&peer), &peerSize);
+        const int phone = accept4(fd, reinterpret_cast<sockaddr*>(&peer), &peerSize, SOCK_CLOEXEC);
         if (phone < 0) {
             if (!running_) {
                 break;
             }
-            if (errno != EINTR && errno != ECONNABORTED && errno != EAGAIN) {
+            if (errno != EINTR && errno != ECONNABORTED && errno != EAGAIN && errno != EWOULDBLOCK) {
                 lastError_ = errno;
                 perror("[TcpServer] accept failed");
                 if (++failures_ >= kFailuresBeforeRelisten) {
@@ -240,7 +283,6 @@ void TcpServer::run() {
         }
         failures_ = 0;
         ++accepted_;
-        tune(phone);
 
         char from[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &peer.sin_addr, from, sizeof(from));
@@ -256,12 +298,13 @@ void TcpServer::run() {
             close(phone);
             continue;
         }
-        busy_ = true;
-        if (callback_) {
-            callback_(phone, user_);
-        } else {
+        if (!callback_) {
             close(phone);
+            continue;
         }
+        tune(phone);
+        busy_ = true;
+        callback_(phone, user_);
     }
 }
 

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <atomic>
 #include <vector>
 
 #include "aa_input.hpp"
@@ -58,6 +59,7 @@ public:
 
     // Session thread.
     int wakeFd() const { return wake_[0]; }
+    bool hasPending() const { return pending_.load(std::memory_order_acquire); }
     void emptyWake();
     void take(CarBatch& batch);
     std::vector<std::vector<uint8_t>> takeLocation(uint64_t nowMs);
@@ -79,6 +81,7 @@ private:
 
     pthread_mutex_t mutex_;
     int wake_[2];  // read end, write end; -1 when the pipe could not be made
+    std::atomic<bool> pending_;
     bool touchForwarding_;
     // Guarded by mutex_.
     bool inputBound_;

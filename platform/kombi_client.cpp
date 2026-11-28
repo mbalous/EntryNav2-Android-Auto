@@ -164,7 +164,7 @@ int ClusterLink::open() const {
         errno = EINVAL;
         return -1;
     }
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         return -1;
     }
@@ -276,6 +276,7 @@ bool ClusterLink::readQueued(std::string* why) {
 }
 
 SendOutcome ClusterLink::send(const std::vector<Request>& requests, std::string* why) {
+    bool wrote = false;  // a request went out on a connection, in this call
     for (size_t i = 0; i < requests.size(); ++i) {
         for (int attempt = 1;; ++attempt) {
             if (fd_ < 0) {
@@ -283,7 +284,7 @@ SendOutcome ClusterLink::send(const std::vector<Request>& requests, std::string*
                 if (fd_ < 0) {
                     explain(why, "connect failed", errno);
                     if (attempt == 2) {
-                        return kLinkDown;
+                        return wrote ? kLinkDown : kUnreachable;
                     }
                     continue;
                 }
@@ -291,6 +292,7 @@ SendOutcome ClusterLink::send(const std::vector<Request>& requests, std::string*
             bool refused = false;
             if (readQueued(why)) {
                 session_ = static_cast<uint16_t>(session_ % 0xFFFE + 1);
+                wrote = true;  // even when the write fails half-way: the cluster may have read some of it
                 if (exchange(fd_, requests[i], session_, why, &refused)) {
                     break;
                 }
@@ -300,7 +302,7 @@ SendOutcome ClusterLink::send(const std::vector<Request>& requests, std::string*
             }
             disconnect();
             if (attempt == 2) {
-                return kLinkDown;
+                return wrote ? kLinkDown : kUnreachable;
             }
         }
     }
@@ -379,7 +381,7 @@ void ClusterLink::emergencyCancel() {
         return;
     }
     const Emergency& e = g_emergency;
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         return;
     }
