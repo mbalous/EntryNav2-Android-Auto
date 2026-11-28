@@ -247,6 +247,15 @@ int main() {
     CHECK(values(source, 3) == std::vector<uint64_t>({1, 10}) && values(source, 4) == std::vector<uint64_t>({8}));
     const std::vector<uint8_t> leftPetrol =
         aa::buildCarServiceDiscovery(kDhuSdpProtobuf, kDhuSdpProtobufLen, nullptr, nullptr);
+    const std::vector<uint8_t> directAudio =
+        aa::buildCarServiceDiscovery(kDhuSdpProtobuf, kDhuSdpProtobufLen, nullptr, nullptr, aa::DisplayPlan(), nullptr,
+                                     aa::DriverPosition::kLeft, nullptr, true);
+    std::vector<uint8_t> sink8, sink9, speechSettings, template8, template9;
+    CHECK(service(directAudio, 8, sink8) && service(directAudio, 9, sink9));
+    CHECK(service(orig, 8, template8) && service(orig, 9, template9));
+    CHECK(sink8 == template8 && sink9 == template9);
+    CHECK(!service(leftPetrol, 9, sink9) && service(leftPetrol, 8, sink8) && sub(sink8, 3, speechSettings));
+    CHECK(value(speechSettings, 2) == 2);
     CHECK(values(leftPetrol, 6) == std::vector<uint64_t>({0}));
     CHECK(service(leftPetrol, 1, sensorService) && sub(sensorService, 2, source));
     CHECK(values(source, 3) == std::vector<uint64_t>({1}) && values(source, 4).empty());

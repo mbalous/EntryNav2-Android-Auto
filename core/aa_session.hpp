@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <atomic>
+#include <deque>
 
 #include "aa_frame.hpp"
 #include "aa_input.hpp"
@@ -35,6 +36,10 @@ using VideoFocusCallback = void (*)(bool, uint32_t, void*);
 using MicRequestCallback = void (*)(bool, void*);
 // Navigation status (channel 10, ids from 0x8000): the message id, then its body.
 using NavStatusCallback = void (*)(uint16_t, const uint8_t*, size_t, void*);
+// PCM and stream lifecycle on the session thread. The receiver must copy data and return without blocking.
+// Channel 8: mono S16LE, config 0 = 16 kHz, 1 = 48 kHz. Channel 9: stereo S16LE, config 0 = 48 kHz.
+using AudioDataCallback = void (*)(uint8_t, uint32_t, const uint8_t*, size_t, uint64_t, void*);
+using AudioStreamCallback = void (*)(uint8_t, uint32_t, uint32_t, bool, void*);
 
 class AASession {
 public:
@@ -53,10 +58,13 @@ public:
     // The phone ended this session with ByeBye (the user left Android Auto), rather than going silent or breaking the
     // connection. Read by the ended callback; reset by start().
     bool phoneSaidGoodbye() const { return goodbye_.load(); }
+    bool audioFailed() const { return audioFailed_.load(); }
     // The car gives the session up, as when the phone is gone (its video decoder stalled). From a callback on the
     // session thread only: the session ends once that callback returns, its ended callback runs, and
     // phoneSaidGoodbye() stays false.
     void giveUp() { givenUp_ = true; }
+    // From any thread: interrupt the current connection and run the normal lost-session callback.
+    void requestDisconnect() { interrupt(); }
 
     // Set before start().
     void setDisconnectCallback(SessionEndedCallback cb, void* user_data = nullptr);
@@ -65,6 +73,9 @@ public:
     void setVideoFocusCallback(VideoFocusCallback cb, void* user_data = nullptr);
     void setMicRequestCallback(MicRequestCallback cb, void* user_data = nullptr);
     void setNavStatusCallback(NavStatusCallback cb, void* user_data = nullptr);
+    // Both callbacks enable direct audio discovery; both null restore Bluetooth discovery. Set before start().
+    // False when only one callback is provided; the previous setting remains unchanged.
+    bool setAudioCallbacks(AudioDataCallback data, AudioStreamCallback stream, void* user_data = nullptr);
     void setTouchForwarding(bool on) { inbox_.setTouchForwarding(on); }  // on by default; keys go either way
     // The file holding the car's model, year, side and fuel (SdrIdentity::loadVehicleFile), read at each service
     // discovery; kept as given, so it must outlive the session. None by default: the default car.
@@ -150,6 +161,11 @@ private:
     void onSensorStart(uint8_t channel, const Message& message);
     void onSetup(uint8_t channel);
     void onStart(uint8_t channel, const Message& message);
+    void stopAudio(uint8_t channel);
+    void deferAudioAck(uint8_t channel, uint32_t session, size_t pcmBytes, uint32_t sampleRate);
+    void sendDueAudioAcks(uint64_t nowUs);
+    void flushAudioAcks(uint8_t channel);
+    uint64_t audioAckWaitUs(uint64_t nowUs) const;
     void onMedia(uint8_t channel, uint16_t id, const Message& message);
     void ackDropped(const FrameHeader& header);  // a frame dropped or skipped: the media message it closes
     void onVideoFocusRequest(uint8_t channel, const Message& message);
@@ -170,6 +186,8 @@ private:
     Callback<VideoFocusCallback> focus_;
     Callback<MicRequestCallback> microphone_;
     Callback<NavStatusCallback> navigation_;
+    Callback<AudioDataCallback> audioData_;
+    Callback<AudioStreamCallback> audioStream_;
     const char* vehicleFile_;
     const char* softwareVersion_;
     const char* carMake_;
@@ -180,6 +198,7 @@ private:
     CarInbox inbox_;
     std::atomic<uint32_t> longestSilenceMs_;
     std::atomic<bool> goodbye_;  // set on the session thread, read by the ended callback
+    std::atomic<bool> audioFailed_;
     // Session thread only.
     uint64_t lastReceivedMs_;  // when the phone last sent anything, 0 before its first byte
     uint64_t connectedMs_;     // when the session thread started on this connection
@@ -194,7 +213,14 @@ private:
     uint32_t mediaSessions_[256];  // per channel, the session id of its start indication, echoed in our acks
     uint32_t mediaMessages_;       // media messages received, every channel
     uint32_t audioMessages_[2];    // guidance (8), media (9)
-    uint32_t microphoneChunks_;    // sent since the phone opened the microphone
+    bool audioActive_[2];
+    uint32_t audioConfig_[2];
+    struct AudioAck {
+        uint32_t session;
+        uint64_t dueUs;
+    };
+    std::deque<AudioAck> audioAcks_[2];
+    uint32_t microphoneChunks_;  // sent since the phone opened the microphone
     // Log throttles, per session.
     unsigned framesSeen_[256];
     unsigned keysLogged_, movesLogged_, navigationLogged_, pings_;

@@ -14,6 +14,7 @@
 #include <ctime>
 
 #include "alps_spp.hpp"
+#include "audio_probe.hpp"
 #include "evo_log.hpp"
 #include "evo_process.hpp"
 
@@ -142,6 +143,7 @@ void context() {
                            "/sys/class/graphics/fb0/modes",
                            "/sys/bus/rpmsg/devices/rpmsg0/name",
                            "/proc/bus/input/devices",
+                           "/etc/asound.conf",
                            "/proc/asound/cards",
                            "/proc/asound/pcm"};
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]) && !stopped; ++i) {
@@ -169,11 +171,12 @@ void context() {
 }
 void usage() {
     puts(
-        "evo-check --scene | --context | --bluetooth | --monitor [seconds 1..60] | --help\n"
+        "evo-check --scene | --context | --audio-routes | --bluetooth | --monitor [seconds 1..60] | --help\n"
         "evo-check --dbus-names | --dbus-introspect <destination> <path> | --dbus-watch <path> [seconds 1..3600]\n"
         "Read and watch only: no UUID, configuration, surface or TCP port.\n"
         "--scene: IVI scene and candidate layers; each command is bounded to 2 seconds.\n"
         "--context: video, MOST, audio and inputs, network, ports and firewall, read only.\n"
+        "--audio-routes: read ConnectionMaster's audio connection table; no route is changed.\n"
         "--bluetooth: the Alps API, then spp_data_interface of instances 0 and 1.\n"
         "--monitor: bounded watch (30 seconds by default), Ctrl-C to end it.\n"
         "--dbus-names: system bus names, with the pid and command line of their process.\n"
@@ -433,9 +436,10 @@ int main(int argc, char** argv) {
     }
     bool scene = (argc == 2 || argc == 3) && !strcmp(argv[1], "--scene");  // optional: another CLI (host tests)
     bool surroundings = argc == 2 && !strcmp(argv[1], "--context");
+    bool audioRoutes = argc == 2 && !strcmp(argv[1], "--audio-routes");
     bool bluetooth = argc == 2 && !strcmp(argv[1], "--bluetooth");
     bool monitor = (argc == 2 || argc == 3) && !strcmp(argv[1], "--monitor");
-    if (!scene && !surroundings && !bluetooth && !monitor) {
+    if (!scene && !surroundings && !audioRoutes && !bluetooth && !monitor) {
         usage();
         return 2;
     }
@@ -462,6 +466,18 @@ int main(int argc, char** argv) {
     if (surroundings) {
         context();
         return stopped ? 1 : 0;
+    }
+    if (audioRoutes) {
+        std::vector<uint8_t> table;
+        if (!evo::readAudioRouteTable(table, 3000)) {
+            return 1;
+        }
+        printf("ConnectionMaster table: position %u, %u\n", table[0], table[1]);
+        for (size_t i = 2; i < table.size(); i += 3) {
+            printf("  route 0x%04x status %u\n", (table[i] << 8) | table[i + 1], table[i + 2]);
+        }
+        puts("Read only; no route was built or removed.");
+        return 0;
     }
     if (scene) {
         const char* ctl = argc == 3 ? argv[2] : "/usr/bin/LayerManagerControl";

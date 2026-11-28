@@ -379,7 +379,7 @@ void setDiscoveryTrim(DiscoveryTrim trim) {
 
 std::vector<uint8_t> buildCarServiceDiscovery(const uint8_t* base, size_t baseLen, const char* vehicleFile,
                                               const char* softwareVersion, const DisplayPlan& display, const char* make,
-                                              DriverPosition codedSide, const char* codedModel) {
+                                              DriverPosition codedSide, const char* codedModel, bool directAudio) {
     SdrIdentity identity;
     identity.driverPosition = codedSide;  // before the file, whose "side=" and "model=" win
     if (codedModel && validCarModel(codedModel)) {
@@ -401,11 +401,15 @@ std::vector<uint8_t> buildCarServiceDiscovery(const uint8_t* base, size_t baseLe
     declareFuel(sdr, identity.fuel);
     tuneMainDisplay(sdr, display);
     declareTouchscreen(sdr, display);
-    removeMediaChannel(sdr);
+    if (!directAudio) {
+        removeMediaChannel(sdr);
+    }
     if (g_trim) {
         g_trim(sdr);
     }
-    retypeGuidanceSink(sdr);
+    if (!directAudio) {
+        retypeGuidanceSink(sdr);
+    }
     return sdr;
 }
 

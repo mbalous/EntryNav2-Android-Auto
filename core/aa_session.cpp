@@ -80,6 +80,7 @@ AASession::AASession()
       codedModel_(nullptr),
       longestSilenceMs_(0),
       goodbye_(false),
+      audioFailed_(false),
       lastReceivedMs_(0),
       connectedMs_(0),
       givenUp_(false),
@@ -96,6 +97,8 @@ AASession::AASession()
     pthread_mutex_init(&socketLock_, nullptr);
     memset(mediaSessions_, 0, sizeof(mediaSessions_));
     audioMessages_[0] = audioMessages_[1] = 0;
+    audioActive_[0] = audioActive_[1] = false;
+    audioConfig_[0] = audioConfig_[1] = 0;
     resetCounters();
 }
 
@@ -133,6 +136,18 @@ void AASession::setMicRequestCallback(MicRequestCallback cb, void* user_data) {
 void AASession::setNavStatusCallback(NavStatusCallback cb, void* user_data) {
     navigation_.fn = cb;
     navigation_.user = user_data;
+}
+
+bool AASession::setAudioCallbacks(AudioDataCallback data, AudioStreamCallback stream, void* user_data) {
+    if ((data == nullptr) != (stream == nullptr)) {
+        fprintf(stderr, "[AASession] direct audio needs both callbacks\n");
+        return false;
+    }
+    audioData_.fn = data;
+    audioData_.user = user_data;
+    audioStream_.fn = stream;
+    audioStream_.user = user_data;
+    return true;
 }
 
 void AASession::postTouchEvent(const TouchEventOut& ev) {
@@ -254,6 +269,8 @@ bool AASession::start(int client_fd) {
     mediaMessages_ = 0;
     memset(mediaSessions_, 0, sizeof(mediaSessions_));
     audioMessages_[0] = audioMessages_[1] = 0;
+    audioAcks_[0].clear();
+    audioAcks_[1].clear();
     lastReceivedMs_ = 0;  // the previous thread is joined
     givenUp_ = false;
     versionTaken_ = false;
@@ -263,6 +280,7 @@ bool AASession::start(int client_fd) {
     txFrame_.clear();
     longestSilenceMs_.store(0);
     goodbye_.store(false);  // after the ended callback of a session replaced above
+    audioFailed_.store(false);
     resetCounters();
     setRunning(true);
     if (pthread_create(&thread_, nullptr, &AASession::threadMain, this) != 0) {
@@ -334,6 +352,10 @@ void AASession::run() {
 
 void AASession::finish() {
     inbox_.stopLocation();
+    audioAcks_[0].clear();
+    audioAcks_[1].clear();
+    stopAudio(channel::kGuidanceAudio);
+    stopAudio(channel::kMediaAudio);
     // This thread alone closes the socket, whether the session ended by itself or stop() asked; the ended callback
     // runs only in the first case.
     const bool endedByItself = clearRunning();
@@ -353,6 +375,11 @@ bool AASession::receiveExactly(uint8_t* to, size_t size) {
     const int wakeFd = inbox_.wakeFd();
     // The car input and our pings are sent from this loop: a send that fails there ends it too.
     while (got < size && running() && !sendBroken_) {
+        const uint64_t nowUs = monotonicUs();
+        sendDueAudioAcks(nowUs);
+        if (sendBroken_) {
+            return false;
+        }
         // Checked at every turn, data or not: bytes that trickle in keep the silence from ever counting.
         if (!tls_.established() && locationClockMs() - connectedMs_ >= kTlsDeadlineMs) {
             printf("[AASession] TLS still not established %u s after the connection: session ends.\n",
@@ -390,7 +417,8 @@ bool AASession::receiveExactly(uint8_t* to, size_t size) {
             fds[1].revents = 0;
             nfds = 2;
         }
-        const int ready = poll(fds, nfds, 1000);
+        const uint64_t delayUs = audioAckWaitUs(nowUs);
+        const int ready = poll(fds, nfds, static_cast<int>((delayUs + 999) / 1000));
         if (ready < 0) {
             if (errno == EINTR) {
                 continue;
@@ -442,6 +470,65 @@ bool AASession::receiveExactly(uint8_t* to, size_t size) {
         }
     }
     return got == size;
+}
+
+void AASession::deferAudioAck(uint8_t channel, uint32_t session, size_t pcmBytes, uint32_t sampleRate) {
+    const unsigned index = channel == channel::kMediaAudio ? 1 : 0;
+    std::deque<AudioAck>& queue = audioAcks_[index];
+    if (queue.size() >= kMaxUnacked) {
+        sendSealed(channel, message::mediaAck(queue.front().session));
+        queue.pop_front();
+    }
+    const uint64_t now = monotonicUs();
+    const uint64_t start = !queue.empty() && queue.back().dueUs > now ? queue.back().dueUs : now;
+    const size_t frameBytes = index ? 4 : 2;
+    uint64_t duration = static_cast<uint64_t>(pcmBytes / frameBytes) * 1000000ULL / sampleRate;
+    if (duration > 500000) {
+        duration = 500000;  // the player retains at most 500 ms of any oversized frame
+    }
+    const AudioAck ack = {session, start + duration};
+    queue.push_back(ack);
+}
+
+void AASession::sendDueAudioAcks(uint64_t nowUs) {
+    for (unsigned index = 0; index < 2; ++index) {
+        std::deque<AudioAck>& queue = audioAcks_[index];
+        const uint8_t channel = index ? channel::kMediaAudio : channel::kGuidanceAudio;
+        while (!queue.empty() && queue.front().dueUs <= nowUs) {
+            const uint32_t session = queue.front().session;
+            queue.pop_front();
+            if (!sendSealed(channel, message::mediaAck(session))) {
+                return;
+            }
+        }
+    }
+}
+
+void AASession::flushAudioAcks(uint8_t channel) {
+    const unsigned index = channel == channel::kMediaAudio ? 1 : 0;
+    std::deque<AudioAck>& queue = audioAcks_[index];
+    while (!queue.empty()) {
+        const uint32_t session = queue.front().session;
+        queue.pop_front();
+        if (running() && !sendSealed(channel, message::mediaAck(session))) {
+            queue.clear();
+            break;
+        }
+    }
+}
+
+uint64_t AASession::audioAckWaitUs(uint64_t nowUs) const {
+    uint64_t delay = 1000000;
+    for (unsigned index = 0; index < 2; ++index) {
+        if (!audioAcks_[index].empty()) {
+            const uint64_t due = audioAcks_[index].front().dueUs;
+            const uint64_t left = due > nowUs ? due - nowUs : 0;
+            if (left < delay) {
+                delay = left;
+            }
+        }
+    }
+    return delay;
 }
 
 // A frame that did not go out whole breaks the stream for good: the phone reads the next frame as the rest of this one,

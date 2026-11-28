@@ -18,6 +18,8 @@
 
 #include "aa_session.hpp"
 #include "alps_spp.hpp"
+#include "audio_player.hpp"
+#include "audio_route.hpp"
 #include "evo_control.hpp"
 #include "evo_knob.hpp"
 #include "evo_mic.hpp"
@@ -109,7 +111,9 @@ public:
     aa::AASession session;
     EvoMic mic;                     // car mic for the Assistant (stopped before the session it posts to)
     evo::kombi::MostHud kombiMost;  // F-series cluster over MOST, on the controller reader (destroyed after kombi)
-    evo::kombi::Arrows kombi;       // AA turn-by-turn -> HUD/cluster arrows, SOME/IP 0xB006 to the KOMBI
+    AudioRoute audioRoute;
+    AudioPlayer audioPlayer;
+    evo::kombi::Arrows kombi;  // AA turn-by-turn -> HUD/cluster arrows, SOME/IP 0xB006 to the KOMBI
     aa::TcpServer server;
     aa::ApInfo ap;
     EvoVideoConfig videoConfig;
@@ -137,8 +141,10 @@ public:
     unsigned sppLinks, tcpLinks, usbLinks;
     std::atomic<unsigned> videoFrames;  // counted on the session thread without mu
     bool wppReply, wppAccepted;
-    bool projectionOverUsb;  // the last session came over USB (its loss is not the wireless loop's business)
-    unsigned lostWireless;   // wireless sessions ended without ByeBye
+    bool projectionOverUsb;           // the last session came over USB (its loss is not the wireless loop's business)
+    bool directAudio, audioFallback;  // under mu: fallback lasts for this service run
+    bool audioRouteUsed, audioCleanupRequested;  // under connectMu: cleanup before another session
+    unsigned lostWireless;                       // wireless sessions ended without ByeBye
 
 private:
     // A phone connection, from the TCP listener or the USB loop: the video is made ready and the session starts.

@@ -254,6 +254,11 @@ int vmostMostMsgSend(void* msg) {
         enqueue(0xA0, 1, 0xC10, 0xC, &one, 1);
     } else if (isEcuReset(m)) {
         answerEcuReset(m);
+    } else if (m->fblock == 0x03 && m->inst == 0 && m->fkt == 0xC03 && m->op == 1 && m->len == 2 && m->data[0] == 0 &&
+               m->data[1] == 0 && getenv("FAKE_AUDIO_TABLE")) {
+        const uint8_t table[] = {0, 0, 0, 1, 0, 3, 0x15, 2};
+        const uint16_t len = strcmp(getenv("FAKE_AUDIO_TABLE"), "bad") == 0 ? 7 : sizeof(table);
+        enqueue(0x03, 0, 0xC03, 0xC, table, len);
     }
     return 0;
 }

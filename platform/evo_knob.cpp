@@ -200,8 +200,8 @@ bool EvoKnob::load() {
 }
 
 bool EvoKnob::start(InputMode mode, Callback cb, void* user) {
-    if (started_ || mode == INPUT_OFF) {
-        return mode == INPUT_OFF;
+    if (started_ || (mode == INPUT_OFF && !peer_)) {
+        return mode == INPUT_OFF && !started_;
     }
     mode_ = mode;
     cb_ = cb;
@@ -659,8 +659,12 @@ void EvoKnob::run() {
         if (!linkLost && dropped()) {
             linkLost = true;
         }
-        if (peer_ && !linkLost) {
-            peer_->finish(*this);
+        if (peer_) {
+            if (!linkLost && connected_ && !running_) {
+                peer_->finish(*this);
+            } else {
+                peer_->connectionLost();
+            }
         }
         fd_ = -1;
     }
